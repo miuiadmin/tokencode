@@ -1,0 +1,877 @@
+//! Fixture 回放测试：验证 `AnthropicAdapter` 把 Anthropic Messages 的 SSE 事件流
+//! 正确翻译为 core 已消费的 `UnifiedEvent` 序列。
+//!
+//! 三份捕获形态的 Anthropic SSE：① 纯文本完成（含 ping 心跳）；② 工具调用累积装配；
+//! ③ 流内错误终止。再附一个请求翻译测试，验证 instructions→system、role 归一、
+//! tool_use/tool_result 装配、max_tokens 默认等 wire 形态。脚手架（fixture 传输 /
+//! 鉴权 / provider / body 构造）与 `chat_adapter_fixtures.rs` 同构。
+
+#![allow(clippy::expect_used)]
+
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use bytes::Bytes;
+use codex_api::AnthropicAdapter;
+use codex_api::AnthropicApiRequest;
+use codex_api::AuthProvider;
+use codex_api::Provider;
+use codex_api::RetryConfig;
+use codex_client::HttpTransport;
+use codex_client::Request;
+use codex_client::RequestBody;
+use codex_client::Response;
+use codex_client::StreamResponse;
+use codex_client::TransportError;
+use codex_language_model::LanguageModel;
+use codex_language_model::UnifiedError;
+use codex_language_model::UnifiedEvent;
+use codex_language_model::UnifiedEventStream;
+use codex_language_model::UnifiedRequest;
+use codex_language_model::UnifiedRequestOptions;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use futures::StreamExt;
+use http::HeaderMap;
+use http::StatusCode;
+use serde_json::Value;
+use serde_json::json;
+
+// --- 与 chat_adapter_fixtures.rs 同构的 fixture 传输 / 鉴权 / provider --------
+
+#[derive(Clone)]
+struct FixtureSseTransport {
+    body: String,
+}
+
+impl FixtureSseTransport {
+    fn new(body: String) -> Self {
+        Self { body }
+    }
+}
+
+impl HttpTransport for FixtureSseTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Build("execute should not run".to_string()))
+    }
+
+    async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+        let stream = futures::stream::iter(vec![Ok::<Bytes, TransportError>(Bytes::from(
+            self.body.clone(),
+        ))]);
+        Ok(StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream),
+        })
+    }
+}
+
+/// 捕获发往传输的请求体（wire JSON），用于断言 adapter 注入的字段（如 max_tokens）。
+/// 同时回放一段固定 SSE body，保证 stream() 不报错。
+#[derive(Clone)]
+struct CapturingTransport {
+    body: String,
+    captured: Arc<Mutex<Option<Value>>>,
+}
+
+impl CapturingTransport {
+    fn new(body: String, captured: Arc<Mutex<Option<Value>>>) -> Self {
+        Self { body, captured }
+    }
+}
+
+impl HttpTransport for CapturingTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Build("execute should not run".to_string()))
+    }
+
+    async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
+        // 反序列化请求体（兼容 Json / EncodedJson / Raw 三种形态）。
+        let json = match req.body.as_ref() {
+            Some(RequestBody::Json(v)) => Some(v.clone()),
+            Some(RequestBody::EncodedJson(e)) => serde_json::from_slice(e.as_bytes()).ok(),
+            Some(RequestBody::Raw(b)) => serde_json::from_slice(b).ok(),
+            None => None,
+        };
+        if let Some(v) = json {
+            *self.captured.lock().expect("capture mutex poisoned") = Some(v);
+        }
+        let stream = futures::stream::iter(vec![Ok::<Bytes, TransportError>(Bytes::from(
+            self.body.clone(),
+        ))]);
+        Ok(StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream),
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct NoAuth;
+
+impl AuthProvider for NoAuth {
+    fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+}
+
+fn provider() -> Provider {
+    Provider {
+        name: "anthropic".to_string(),
+        base_url: "https://example.com/v1".to_string(),
+        query_params: None,
+        headers: HeaderMap::new(),
+        retry: RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            retry_429: false,
+            retry_5xx: false,
+            retry_transport: true,
+        },
+        stream_idle_timeout: Duration::from_millis(50),
+        max_output_tokens: None,
+    }
+}
+
+/// 把一组 Anthropic 事件（JSON）拼成 SSE body（每帧仅 `data:` 行，解析侧按 JSON `type` 分派）。
+fn build_anthropic_body(events: &[Value]) -> String {
+    let mut body = String::new();
+    for event in events {
+        body.push_str(&format!("data: {event}\n\n"));
+    }
+    body
+}
+
+// --- 中立请求样本 ----------------------------------------------------------
+
+fn sample_unified_request() -> UnifiedRequest {
+    UnifiedRequest {
+        model: "claude-3-5-sonnet".to_string(),
+        instructions: "你是一个助手。".to_string(),
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "你好".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    }
+}
+
+fn sample_unified_options() -> UnifiedRequestOptions {
+    UnifiedRequestOptions {
+        session_id: None,
+        thread_id: None,
+        session_source: None,
+        extra_headers: HeaderMap::new(),
+        compression: Default::default(),
+        turn_state: None,
+    }
+}
+
+// --- 流收集：返回 (事件序列, 终止错误串) ------------------------------------
+
+async fn drain(s: UnifiedEventStream) -> (Vec<UnifiedEvent>, Option<String>) {
+    let mut s = s;
+    let mut evs = Vec::new();
+    let mut err = None;
+    while let Some(item) = s.next().await {
+        match item {
+            Ok(ev) => {
+                // RateLimits 源自 HTTP 头（fixture 无相关头），过滤掉保证可比。
+                if !matches!(ev, UnifiedEvent::RateLimits(_)) {
+                    evs.push(ev);
+                }
+            }
+            Err(e) => {
+                err = Some(match e {
+                    UnifiedError::Passthrough(boxed) => boxed.to_string(),
+                    UnifiedError::Mapping(m) => format!("Mapping({m})"),
+                });
+                break;
+            }
+        }
+    }
+    (evs, err)
+}
+
+/// 断言事件序列中存在一条 assistant 文本 `OutputItemDone(Message)`，且文本 == 期望。
+fn expect_assistant_text(evs: &[UnifiedEvent], expected: &str) {
+    let found = evs.iter().any(|ev| match ev {
+        UnifiedEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
+            content.iter().any(|c| match c {
+                ContentItem::OutputText { text } => text == expected,
+                _ => false,
+            })
+        }
+        _ => false,
+    });
+    assert!(found, "未找到文本为 {expected:?} 的 assistant OutputItemDone；事件序列: {evs:?}");
+}
+
+/// 断言事件序列中存在一条 `OutputItemDone(FunctionCall)`，name/call_id/arguments 符合期望。
+fn expect_function_call(evs: &[UnifiedEvent], name: &str, call_id: &str, arguments: &str) {
+    let found = evs.iter().any(|ev| match ev {
+        UnifiedEvent::OutputItemDone(ResponseItem::FunctionCall {
+            name: n,
+            call_id: c,
+            arguments: a,
+            ..
+        }) => n == name && c == call_id && a == arguments,
+        _ => false,
+    });
+    assert!(
+        found,
+        "未找到 FunctionCall(name={name:?}, call_id={call_id:?}, arguments={arguments:?})；事件序列: {evs:?}"
+    );
+}
+
+// --- 驱动 ------------------------------------------------------------------
+
+/// 驱动 adapter 跑给定 Anthropic SSE body，返回事件序列 + 错误。
+async fn run(body: String) -> (Vec<UnifiedEvent>, Option<String>) {
+    let adapter = AnthropicAdapter::new(
+        FixtureSseTransport::new(body),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let stream = LanguageModel::stream(
+        &adapter,
+        sample_unified_request(),
+        sample_unified_options(),
+    )
+    .await
+    .expect("adapter stream 不应失败");
+    drain(stream).await
+}
+
+// --- 三份 fixture -----------------------------------------------------------
+
+#[tokio::test]
+async fn fixture_text_completion() {
+    // 标准纯文本完成：message_start（usage 起算）→ text 块 → 文本增量 → ping 心跳
+    // → content_block_stop → message_delta（stop_reason:end_turn + output tokens）→ message_stop。
+    let events = vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "claude-3-5-sonnet",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 10, "output_tokens": 1}
+            }
+        }),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}),
+        json!({"type": "ping"}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": ", world"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {"output_tokens": 3}
+        }),
+        json!({"type": "message_stop"}),
+    ];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+
+    assert!(err.is_none(), "纯文本完成不应有错误：{err:?}");
+    // 首事件 Created；末事件 Completed(end_turn=Some(true), token_usage 非空)。
+    assert!(matches!(evs.first(), Some(UnifiedEvent::Created)), "首事件应为 Created: {evs:?}");
+    match evs.iter().find(|ev| matches!(ev, UnifiedEvent::Completed { .. })) {
+        Some(UnifiedEvent::Completed {
+            end_turn, token_usage, ..
+        }) => {
+            assert_eq!(*end_turn, Some(true), "stop_reason=end_turn → end_turn=Some(true)");
+            let usage = token_usage
+                .as_ref()
+                .expect("Completed 应携带 token_usage");
+            // input 来自 message_start；output 由 message_delta 覆盖为 3；total = input + output。
+            assert_eq!(usage.input_tokens, 10);
+            assert_eq!(usage.output_tokens, 3);
+            assert_eq!(usage.total_tokens, 13);
+        }
+        other => panic!("应存在 Completed 事件，实际: {other:?}"),
+    }
+    // 文本增量逐条到达（ping 不产出任何事件）。
+    let deltas: Vec<&str> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            UnifiedEvent::OutputTextDelta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, vec!["Hello", ", world"], "文本增量序列: {evs:?}");
+    // 装配出完整 assistant 文本。
+    expect_assistant_text(&evs, "Hello, world");
+    // OutputItemAdded(Message) 必须先于 OutputItemDone（core 要求 active item）。
+    let added = evs
+        .iter()
+        .position(|ev| matches!(ev, UnifiedEvent::OutputItemAdded(ResponseItem::Message { .. })));
+    let done = evs
+        .iter()
+        .position(|ev| matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Message { .. })));
+    assert!(added.is_some() && done.is_some(), "应同时有 Message 的 Added/Done: {evs:?}");
+    assert!(added.unwrap() < done.unwrap(), "Message Added 必须先于 Done");
+}
+
+#[tokio::test]
+async fn fixture_tool_call_accumulation() {
+    // 工具调用：message_start → tool_use 块（id+name+空 input）→ input_json_delta 分片
+    // → content_block_stop → message_delta（stop_reason:tool_use）→ message_stop。
+    let events = vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_2",
+                "model": "claude-3-5-sonnet",
+                "usage": {"input_tokens": 20, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}
+        }),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"city\":"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "\"SF\"}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": null},
+            "usage": {"output_tokens": 5}
+        }),
+        json!({"type": "message_stop"}),
+    ];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+
+    assert!(err.is_none(), "工具调用完成不应有错误：{err:?}");
+    // tool_use 块触发 OutputItemAdded(FunctionCall) 占位（call_id = tool_use.id）。
+    assert!(
+        evs.iter().any(|ev| matches!(
+            ev,
+            UnifiedEvent::OutputItemAdded(ResponseItem::FunctionCall { name, call_id, .. })
+                if name == "get_weather" && call_id == "toolu_1"
+        )),
+        "应有 FunctionCall 的 OutputItemAdded 占位: {evs:?}"
+    );
+    // 装配出完整 FunctionCall（input_json_delta 分片已累积为 arguments）。
+    expect_function_call(&evs, "get_weather", "toolu_1", r#"{"city":"SF"}"#);
+    // stop_reason=tool_use → end_turn=Some(false)（turn 待工具结果继续）。
+    match evs.iter().find(|ev| matches!(ev, UnifiedEvent::Completed { .. })) {
+        Some(UnifiedEvent::Completed { end_turn, .. }) => {
+            assert_eq!(*end_turn, Some(false), "stop_reason=tool_use → end_turn=Some(false)");
+        }
+        other => panic!("应存在 Completed 事件，实际: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fixture_in_stream_error_terminates() {
+    // 流内错误帧（HTTP 2xx，body 为 {type:error, error:{message}}）：应终止并产出错误。
+    let events = vec![json!({
+        "type": "error",
+        "error": {"type": "overloaded_error", "message": "rate limited"}
+    })];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+
+    assert!(evs.is_empty(), "错误帧不应产出任何 UnifiedEvent: {evs:?}");
+    let err = err.expect("应终止于错误");
+    assert!(
+        err.contains("rate limited"),
+        "错误信息应透传 'rate limited'，实际: {err}"
+    );
+}
+
+// --- 请求翻译（wire 形态）--------------------------------------------------
+
+#[test]
+fn request_translation_shapes_anthropic_wire() {
+    // instructions → 顶层 system；user 文本 → messages[].content[].text；
+    // assistant FunctionCall → tool_use 块；user FunctionCallOutput → tool_result 块。
+    let request = UnifiedRequest {
+        model: "claude-3-5-sonnet".to_string(),
+        instructions: "系统级指令".to_string(),
+        input: vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "查天气".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "get_weather".to_string(),
+                namespace: None,
+                arguments: r#"{"city":"SF"}"#.to_string(),
+                call_id: "toolu_1".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "toolu_1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload {
+                    body: codex_protocol::models::FunctionCallOutputBody::Text("晴天".to_string()),
+                    success: None,
+                },
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let api_request: AnthropicApiRequest = request.into();
+    let json = serde_json::to_value(&api_request).expect("AnthropicApiRequest 应可序列化");
+
+    // 必填 max_tokens 走常量默认（4096：Claude 3 整代上限，跨所有 Claude 模型不被 400 的安全值）。
+    assert_eq!(
+        json.get("max_tokens").and_then(|v| v.as_u64()),
+        Some(4096),
+        "max_tokens 应为常量默认 4096"
+    );
+    // stream 透传。
+    assert_eq!(json.get("stream").and_then(|v| v.as_bool()), Some(true));
+
+    // instructions → 顶层 system（数组形态 [{type:text, text}]），不出现在 messages 里。
+    let system = json
+        .get("system")
+        .and_then(|v| v.as_array())
+        .expect("应有顶层 system 数组");
+    assert_eq!(system.len(), 1);
+    assert_eq!(
+        system[0].get("type").and_then(|v| v.as_str()),
+        Some("text")
+    );
+    assert_eq!(
+        system[0].get("text").and_then(|v| v.as_str()),
+        Some("系统级指令")
+    );
+
+    // messages：user(文本) → assistant(tool_use) → user(tool_result)，三条。
+    let messages = json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages 数组");
+    assert_eq!(messages.len(), 3, "消息序列: {messages:?}");
+
+    // ① user 文本块。
+    let (role, block_type, text) = block_at(messages, 0, 0);
+    assert_eq!(role, "user");
+    assert_eq!(block_type, "text");
+    assert_eq!(text.as_deref(), Some("查天气"));
+
+    // ② assistant tool_use 块（id=call_id, name, input 为解析后对象）。
+    let msg1 = &messages[1];
+    assert_eq!(msg1.get("role").and_then(|v| v.as_str()), Some("assistant"));
+    let tool_use = &msg1.get("content").and_then(|c| c.as_array()).unwrap()[0];
+    assert_eq!(
+        tool_use.get("type").and_then(|v| v.as_str()),
+        Some("tool_use")
+    );
+    assert_eq!(
+        tool_use.get("id").and_then(|v| v.as_str()),
+        Some("toolu_1")
+    );
+    assert_eq!(
+        tool_use.get("name").and_then(|v| v.as_str()),
+        Some("get_weather")
+    );
+    // arguments JSON 串解析为对象 {"city":"SF"}。
+    assert_eq!(
+        tool_use.get("input").and_then(|v| v.get("city")).and_then(|v| v.as_str()),
+        Some("SF")
+    );
+
+    // ③ user tool_result 块（tool_use_id 对齐被回应的 tool_use.id，content 为文本）。
+    let (role, block_type, content) = block_at(messages, 2, 0);
+    assert_eq!(role, "user");
+    assert_eq!(block_type, "tool_result");
+    assert_eq!(content.as_deref(), Some("晴天"));
+    // tool_use_id 字段对齐。
+    let tool_result = &messages[2].get("content").and_then(|c| c.as_array()).unwrap()[0];
+    assert_eq!(
+        tool_result.get("tool_use_id").and_then(|v| v.as_str()),
+        Some("toolu_1")
+    );
+}
+
+/// 取 messages[msg_idx].content[block_idx] 的 (role, block.type, 文本类字段的字符串值)。
+fn block_at(messages: &[Value], msg_idx: usize, block_idx: usize) -> (&str, &str, Option<String>) {
+    let msg = &messages[msg_idx];
+    let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    let block = msg
+        .get("content")
+        .and_then(|c| c.as_array())
+        .expect("content 应为数组")
+        .get(block_idx)
+        .expect("应有对应内容块");
+    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let text = block
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| block.get("content").and_then(|v| v.as_str()).map(String::from));
+    (role, block_type, text)
+}
+
+/// Anthropic 把非 user/assistant 角色（如 developer）从 messages 中丢弃，避免非法角色；
+/// system 提示一律经顶层 instructions → system 承载。
+#[test]
+fn request_translation_drops_non_user_assistant_roles() {
+    let request = UnifiedRequest {
+        model: "claude-3-5-sonnet".to_string(),
+        instructions: String::new(),
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "开发者指令".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        tools: None,
+        tool_choice: String::new(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let api_request: AnthropicApiRequest = request.into();
+    let json = serde_json::to_value(&api_request).expect("应可序列化");
+
+    // developer 消息被丢弃 → messages 为空；system 因 instructions 为空也不出现。
+    let messages = json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages 数组");
+    assert!(messages.is_empty(), "developer 角色应被丢弃，messages 应为空: {messages:?}");
+    assert!(
+        json.get("system").is_none(),
+        "instructions 为空时不应出现 system 字段"
+    );
+}
+
+// --- 回归（code-review 修复）------------------------------------------------
+
+/// 回归 A1：开启 prompt caching 时，`message_start.usage` 同时报 `input_tokens`（非缓存）、
+/// `cache_creation_input_tokens`、`cache_read_input_tokens`。`TokenUsage.input_tokens` 须为
+/// 「含缓存超集」（非缓存 + cache_creation + cache_read），`cached_input_tokens` = cache_read，
+/// 否则破坏 `non_cached_input = input - cached` 不变量（protocol.rs）——之前直接透传原始
+/// `input_tokens`（非缓存计数）会令 total 偏小、`non_cached_input` 反算溢出。
+#[tokio::test]
+async fn fixture_usage_counts_prompt_cache_as_superset() {
+    let events = vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_c",
+                "model": "claude-3-5-sonnet",
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 200,
+                    "cache_read_input_tokens": 5000,
+                    "output_tokens": 1
+                }
+            }
+        }),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {"output_tokens": 3}
+        }),
+        json!({"type": "message_stop"}),
+    ];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+    assert!(err.is_none(), "缓存 usage 不应有错误：{err:?}");
+    match evs.iter().find(|ev| matches!(ev, UnifiedEvent::Completed { .. })) {
+        Some(UnifiedEvent::Completed { token_usage, .. }) => {
+            let usage = token_usage.as_ref().expect("应有 token_usage");
+            // 超集 = 10（非缓存）+ 200（cache_creation）+ 5000（cache_read）= 5210。
+            assert_eq!(usage.input_tokens, 5210, "input_tokens 应为含缓存超集");
+            // cached_input_tokens = cache_read（不变量中的缓存子集）。
+            assert_eq!(usage.cached_input_tokens, 5000);
+            assert_eq!(usage.output_tokens, 3);
+            // total = 超集 input + output。
+            assert_eq!(usage.total_tokens, 5213, "total = 超集 input + output");
+        }
+        other => panic!("应存在 Completed 事件，实际: {other:?}"),
+    }
+}
+
+/// 回归 wire 形态（code-review 多条）：
+/// ① 无 tools 时即便 tool_choice="auto" 也不发 tool_choice（Anthropic 无 tools 时拒绝 tool_choice）；
+/// ② 有 tools + auto + parallel=false → {type:auto, disable_parallel_tool_use:true}；
+/// ③ 有 tools + auto + parallel=true → 不带 disable_parallel_tool_use（保持默认并行）；
+/// ④ 有 tools + none → {type:none}（不带 disable_parallel）；
+/// ⑤ 工具失败 success=Some(false) → tool_result 带 is_error:true（之前丢失该标志）。
+#[test]
+fn request_translation_tool_choice_parallel_and_is_error_shapes() {
+    let tool = json!({"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}});
+
+    // ① 无 tools → 不发 tool_choice（即便 tool_choice=auto）。
+    let req = sample_unified_request();
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+    assert!(
+        json.get("tool_choice").is_none(),
+        "无 tools 时不应发 tool_choice（即便 tool_choice=auto）"
+    );
+
+    // ② 有 tools + auto + parallel=false → disable_parallel_tool_use:true。
+    let mut req = sample_unified_request();
+    req.tools = Some(vec![tool.clone()]);
+    req.tool_choice = "auto".to_string();
+    req.parallel_tool_calls = false;
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+    let tc = json.get("tool_choice").expect("有 tools + auto 应发 tool_choice");
+    assert_eq!(tc.get("type").and_then(|v| v.as_str()), Some("auto"));
+    assert_eq!(
+        tc.get("disable_parallel_tool_use").and_then(|v| v.as_bool()),
+        Some(true),
+        "parallel=false → disable_parallel_tool_use=true"
+    );
+
+    // ③ 有 tools + auto + parallel=true → 不带 disable_parallel_tool_use。
+    let mut req = sample_unified_request();
+    req.tools = Some(vec![tool.clone()]);
+    req.tool_choice = "auto".to_string();
+    req.parallel_tool_calls = true;
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+    let tc = json.get("tool_choice").expect("有 tools + auto 应发 tool_choice");
+    assert_eq!(tc.get("type").and_then(|v| v.as_str()), Some("auto"));
+    assert!(
+        tc.get("disable_parallel_tool_use").is_none(),
+        "parallel=true 时不应带 disable_parallel_tool_use"
+    );
+
+    // ④ 有 tools + none → {type:none}，无 disable_parallel。
+    let mut req = sample_unified_request();
+    req.tools = Some(vec![tool]);
+    req.tool_choice = "none".to_string();
+    req.parallel_tool_calls = false;
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+    let tc = json.get("tool_choice").expect("none 应显式发出 {type:none}");
+    assert_eq!(tc.get("type").and_then(|v| v.as_str()), Some("none"));
+    assert!(
+        tc.get("disable_parallel_tool_use").is_none(),
+        "none 时不应带 disable_parallel_tool_use"
+    );
+
+    // ⑤ 工具失败 success=Some(false) → tool_result.is_error=true。
+    let mut req = sample_unified_request();
+    req.input.push(ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: "toolu_1".to_string(),
+        output: codex_protocol::models::FunctionCallOutputPayload {
+            body: codex_protocol::models::FunctionCallOutputBody::Text("出错了".to_string()),
+            success: Some(false),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+    let messages = json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages");
+    let tool_result = messages
+        .iter()
+        .flat_map(|m| {
+            m.get("content")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
+        .expect("应有 tool_result 块");
+    assert_eq!(
+        tool_result.get("is_error").and_then(|v| v.as_bool()),
+        Some(true),
+        "success=Some(false) → is_error=true"
+    );
+}
+
+/// 回归 is_error 映射的三个状态（sweep：原测试只覆盖 success=Some(false) 一个方向，缺成功与
+/// 未表态两个分支）：
+/// - `success=Some(false)`（失败）→ `is_error=Some(true)`；
+/// - `success=Some(true)`（成功）→ `is_error=Some(false)`（取反，非同义透传）；
+/// - `success=None`（未表态）→ `is_error` 字段省略（`skip_serializing_if`，默认成功）。
+#[test]
+fn request_translation_tool_result_is_error_covers_all_success_states() {
+    fn translate(success: Option<bool>) -> serde_json::Value {
+        let mut req = sample_unified_request();
+        req.input.push(ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "toolu_1".to_string(),
+            output: codex_protocol::models::FunctionCallOutputPayload {
+                body: codex_protocol::models::FunctionCallOutputBody::Text("x".to_string()),
+                success,
+            },
+            internal_chat_message_metadata_passthrough: None,
+        });
+        let api: AnthropicApiRequest = req.into();
+        serde_json::to_value(&api).expect("可序列化")
+    }
+    let tool_result = |json: &serde_json::Value| {
+        json.get("messages")
+            .and_then(|m| m.as_array())
+            .expect("应有 messages")
+            .iter()
+            .flat_map(|m| {
+                m.get("content")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
+            .expect("应有 tool_result 块")
+    };
+
+    // 失败 → is_error=true。
+    assert_eq!(
+        tool_result(&translate(Some(false)))
+            .get("is_error")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "success=Some(false) → is_error=true"
+    );
+    // 成功 → is_error=false（取反，验证不是同义透传）。
+    assert_eq!(
+        tool_result(&translate(Some(true)))
+            .get("is_error")
+            .and_then(|v| v.as_bool()),
+        Some(false),
+        "success=Some(true) → is_error=false"
+    );
+    // 未表态 → is_error 字段省略。
+    assert!(
+        tool_result(&translate(None))
+            .get("is_error")
+            .is_none(),
+        "success=None 时 is_error 不应序列化"
+    );
+}
+
+/// 回归空 messages 守卫：input 仅含被丢弃的 developer 角色 → 翻译后 messages 为空；adapter 应
+/// 在发请求前明确失败（而非把空 messages 送到 Anthropic 拿 400）。
+#[tokio::test]
+async fn stream_rejects_empty_messages() {
+    let mut request = sample_unified_request();
+    request.instructions = String::new();
+    request.input = vec![ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "开发者指令".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }];
+
+    let adapter = AnthropicAdapter::new(
+        FixtureSseTransport::new(String::new()),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let result = LanguageModel::stream(&adapter, request, sample_unified_options()).await;
+    let err = match result {
+        Ok(_) => panic!("空 messages 应在客户端被拒绝，但 stream 成功了"),
+        Err(e) => e,
+    };
+    let msg = match err {
+        UnifiedError::Passthrough(boxed) => boxed.to_string(),
+        UnifiedError::Mapping(m) => m,
+    };
+    assert!(
+        msg.contains("无任何 message"),
+        "错误应说明无 messages：{msg}"
+    );
+}
+
+#[tokio::test]
+async fn provider_max_output_tokens_drives_wire_max_tokens() {
+    // 经 CapturingTransport 捕获 adapter 发出的 wire 请求体，断言 max_tokens：
+    //   provider.max_output_tokens = None  → 沿用 From 写入的 4096 默认；
+    //   provider.max_output_tokens = Some  → 覆盖为配置值。
+    for (configured, expected) in [(None, 4_096u64), (Some(8_192u32), 8_192)] {
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        // 最小可完成的 SSE，仅供 stream() 跑通；本用例只断言请求体。
+        let body = build_anthropic_body(&[
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_cap",
+                    "model": "claude-3-5-sonnet",
+                    "usage": { "input_tokens": 1, "output_tokens": 0 }
+                }
+            }),
+            json!({ "type": "message_stop" }),
+        ]);
+        let mut provider = provider();
+        provider.max_output_tokens = configured;
+        let adapter = AnthropicAdapter::new(
+            CapturingTransport::new(body, captured.clone()),
+            provider,
+            Arc::new(NoAuth),
+        );
+        let _ = LanguageModel::stream(
+            &adapter,
+            sample_unified_request(),
+            sample_unified_options(),
+        )
+        .await
+        .expect("adapter stream 不应失败");
+
+        let wire = captured
+            .lock()
+            .expect("capture mutex poisoned")
+            .clone()
+            .expect("应已捕获 Anthropic 请求体");
+        assert_eq!(
+            wire.get("max_tokens").and_then(|v| v.as_u64()),
+            Some(expected),
+            "provider.max_output_tokens={configured:?} 时 wire max_tokens 应为 {expected}"
+        );
+    }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "TokenCode Issue Digest"
+  short_description: "Summarize TokenCode issues by labels or all areas"
+  default_prompt: "Use $tokencode-issue-digest to run the TokenCode issue digest for labels tui and exec over the previous 24 hours."

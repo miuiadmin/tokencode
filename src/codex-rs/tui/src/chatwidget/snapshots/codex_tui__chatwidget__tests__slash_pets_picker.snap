@@ -1,0 +1,23 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: popup
+---
+  Select Pet
+  Choose a pet to wake in the terminal.
+
+  Type to filter pets...
+  BSOD         A tiny blue-screen gremlin
+  Dewey        A tidy duck for calm workspace
+               days
+  Fireball     Hot path energy for fast
+               iteration                              Loading preview...
+  Null Signal  Quiet signal from the void
+  Rocky        A steady rock when the diff
+               gets large
+  Seedy        Small green shoots for new
+               ideas
+  Stacky       A balanced stack for deep work
+› TokenCode    The original TokenCode
+               companion
+
+  Press enter to confirm or esc to go back

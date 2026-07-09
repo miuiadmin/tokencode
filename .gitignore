@@ -1,0 +1,67 @@
+# ============================================================
+#  TokenCode · .gitignore
+# ============================================================
+#  隐私规则总览（详见 CLAUDE.md 第 3 节）：
+#    🔒 永不上传：CLAUDE.md / AGENTS.md / 设计文档/ / 参考目录/ / 常用工具/
+#    ✅ 可以上传：docs/ / README.md / README.zh-CN.md / LICENSE / 源代码
+# ============================================================
+
+# ---------- 🔒 内部私有文档（设计思路 / 参考来源 · 永不上传）----------
+/CLAUDE.md
+/AGENTS.md
+/设计文档/
+/参考目录/
+/常用工具/
+
+# 内部草稿 / 本地笔记
+*.draft.md
+*.local.md
+TODO.local.md
+NOTES.md
+
+# ---------- ✅ 对外文档（不要忽略，正常上传）----------
+# docs/
+# README.md
+# README.zh-CN.md
+# LICENSE
+
+# ---------- 依赖 ----------
+node_modules/
+.pnpm-store/
+.yarn/
+bun.lockb
+
+# ---------- 构建产物 ----------
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+*.tsbuildinfo
+
+# ---------- 环境变量与密钥 ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 日志 ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- 编辑器 / 系统 ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# ---------- 本地构建配置（本机私有，不入仓库）----------
+# 根锚定（前导 /）：只忽略仓库根的 .cargo/config.toml；不影响 src/codex-rs/.cargo/config.toml（上游配置，须入仓库）
+/.cargo/config.toml
