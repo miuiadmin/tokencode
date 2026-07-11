@@ -85,7 +85,7 @@ pub(crate) fn executable_identity_from_bytes(bytes: &[u8]) -> ExecutableIdentity
 }
 
 fn managed_codex_file_name() -> &'static str {
-    if cfg!(windows) { "codex.exe" } else { "codex" }
+    if cfg!(windows) { "tokencode.exe" } else { "tokencode" }
 }
 
 #[cfg(unix)]

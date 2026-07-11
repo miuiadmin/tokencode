@@ -113,7 +113,7 @@ def _installed_codex_path() -> Path:
         from codex_cli_bin import bundled_codex_path
     except ImportError as exc:
         raise FileNotFoundError(
-            "Unable to locate the pinned Codex runtime. Install the published SDK build "
+            "Unable to locate the pinned TokenCode runtime. Install the published SDK build "
             f"with its {RUNTIME_PKG_NAME} dependency, or set CodexConfig.codex_bin "
             "explicitly."
         ) from exc
@@ -178,7 +178,7 @@ def resolve_codex_bin(config: "CodexConfig", ops: CodexBinResolverOps) -> Path:
         codex_bin = Path(config.codex_bin)
         if not ops.path_exists(codex_bin):
             raise FileNotFoundError(
-                f"Codex binary not found at {codex_bin}. Set CodexConfig.codex_bin "
+                f"TokenCode binary not found at {codex_bin}. Set CodexConfig.codex_bin "
                 "to a valid binary path."
             )
         return codex_bin
@@ -192,10 +192,10 @@ def _resolve_codex_bin(config: "CodexConfig") -> Path:
 
 @dataclass(slots=True)
 class CodexConfig:
-    """Configuration for launching and identifying the local Codex runtime.
+    """Configuration for launching and identifying the local TokenCode runtime.
 
     Most callers can use ``Codex()`` without configuration. Set ``codex_bin``
-    only when intentionally using a specific local Codex executable.
+    only when intentionally using a specific local TokenCode executable.
     """
 
     codex_bin: str | None = None
@@ -210,7 +210,7 @@ class CodexConfig:
 
 
 class CodexClient:
-    """Synchronous typed JSON-RPC client for `codex app-server` over stdio."""
+    """Synchronous typed JSON-RPC client for `tokencode app-server` over stdio."""
 
     def __init__(
         self,
@@ -835,19 +835,19 @@ class CodexClient:
 
     def _write_message(self, payload: JsonObject) -> None:
         if self._proc is None or self._proc.stdin is None:
-            raise TransportClosedError("Codex process is not running")
+            raise TransportClosedError("TokenCode process is not running")
         with self._lock:
             self._proc.stdin.write(json.dumps(payload) + "\n")
             self._proc.stdin.flush()
 
     def _read_message(self) -> dict[str, JsonValue]:
         if self._proc is None or self._proc.stdout is None:
-            raise TransportClosedError("Codex process is not running")
+            raise TransportClosedError("TokenCode process is not running")
 
         line = self._proc.stdout.readline()
         if not line:
             raise TransportClosedError(
-                f"Codex process closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
+                f"TokenCode process closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
             )
 
         try:
@@ -861,4 +861,4 @@ class CodexClient:
 
 
 def default_codex_home() -> str:
-    return str(Path.home() / ".codex")
+    return str(Path.home() / ".tokencode")
