@@ -51,6 +51,23 @@ const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/miuiadmin/tokencode/issues";
 
+// —— 原生多协议：跨厂商直连 provider 标识与默认 base_url ——
+const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+const GLM_PROVIDER_NAME: &str = "Z.ai GLM";
+pub const GLM_PROVIDER_ID: &str = "glm";
+pub const GLM_DEFAULT_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+
+const MINIMAX_PROVIDER_NAME: &str = "MiniMax";
+pub const MINIMAX_PROVIDER_ID: &str = "minimax";
+pub const MINIMAX_DEFAULT_BASE_URL: &str = "https://api.minimax.chat/v1";
+
+const MOONSHOT_PROVIDER_NAME: &str = "Moonshot Kimi";
+pub const MOONSHOT_PROVIDER_ID: &str = "moonshot";
+pub const MOONSHOT_DEFAULT_BASE_URL: &str = "https://api.moonshot.cn/v1";
+
 /// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -488,6 +505,32 @@ pub fn built_in_model_providers(
             LMSTUDIO_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
         ),
+        // —— 跨厂商直连：每条模型在 models.json 里通过 provider_id 绑定到下列 provider ——
+        (ANTHROPIC_PROVIDER_ID, create_anthropic_provider(None)),
+        (
+            GLM_PROVIDER_ID,
+            create_openai_chat_compatible_provider(
+                GLM_PROVIDER_NAME,
+                GLM_DEFAULT_BASE_URL,
+                "GLM_API_KEY",
+            ),
+        ),
+        (
+            MINIMAX_PROVIDER_ID,
+            create_openai_chat_compatible_provider(
+                MINIMAX_PROVIDER_NAME,
+                MINIMAX_DEFAULT_BASE_URL,
+                "MINIMAX_API_KEY",
+            ),
+        ),
+        (
+            MOONSHOT_PROVIDER_ID,
+            create_openai_chat_compatible_provider(
+                MOONSHOT_PROVIDER_NAME,
+                MOONSHOT_DEFAULT_BASE_URL,
+                "MOONSHOT_API_KEY",
+            ),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -561,6 +604,68 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         auth: None,
         aws: None,
         wire_api,
+        adapter_type: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        max_output_tokens: None,
+    }
+}
+
+/// 构造 Anthropic 原生 provider（Messages API）。
+///
+/// `max_output_tokens` 必填：Anthropic Messages 的 `max_tokens` 是请求必填字段，
+/// 缺省会触发 422；此处给一个保守上限，模型/配置仍可覆盖。
+/// 认证由 `Anthropic` adapter 内层把 Bearer 改写为 `x-api-key` + `anthropic-version`。
+pub fn create_anthropic_provider(base_url: Option<String>) -> ModelProviderInfo {
+    ModelProviderInfo {
+        name: ANTHROPIC_PROVIDER_NAME.into(),
+        base_url: Some(base_url.unwrap_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_string())),
+        env_key: Some("ANTHROPIC_API_KEY".to_string()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Anthropic,
+        adapter_type: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        max_output_tokens: Some(4096),
+    }
+}
+
+/// 构造 OpenAI Chat Completions 兼容网关 provider（GLM / MiniMax / Moonshot 等共用）。
+///
+/// 这些厂商对外暴露 OpenAI 兼容的 `/v1/chat/completions`，统一走 `OpenaiChat` adapter。
+/// `name` 仅用于展示，`base_url` 为各厂商 API 根（adapter 在其后拼接 `/chat/completions`），
+/// `env_key` 为读取 API Key 的环境变量名。
+pub fn create_openai_chat_compatible_provider(
+    name: &str,
+    base_url: &str,
+    env_key: &str,
+) -> ModelProviderInfo {
+    ModelProviderInfo {
+        name: name.into(),
+        base_url: Some(base_url.into()),
+        env_key: Some(env_key.to_string()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Chat,
         adapter_type: None,
         query_params: None,
         http_headers: None,

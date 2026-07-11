@@ -431,6 +431,10 @@ pub struct ModelInfo {
         deserialize_with = "deserialize_optional_model_selector"
     )]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// 该模型绑定的 provider id（指向 config 的 model_providers map）。
+    /// None 表示回落到会话默认 provider（config.model_provider），向后兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
 }
 
 impl ModelInfo {
@@ -693,6 +697,7 @@ mod tests {
             auto_review_model_override: None,
             tool_mode: None,
             multi_agent_version: None,
+            provider_id: None,
         }
     }
 

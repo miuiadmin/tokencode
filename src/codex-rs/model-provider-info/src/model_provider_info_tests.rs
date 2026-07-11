@@ -368,6 +368,29 @@ fn test_built_in_model_providers_include_amazon_bedrock() {
 }
 
 #[test]
+fn test_built_in_model_providers_include_cross_vendor_providers() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    // 跨厂商直连的 4 个 provider 应在内置目录里。
+    assert!(providers.contains_key(ANTHROPIC_PROVIDER_ID));
+    assert!(providers.contains_key(GLM_PROVIDER_ID));
+    assert!(providers.contains_key(MINIMAX_PROVIDER_ID));
+    assert!(providers.contains_key(MOONSHOT_PROVIDER_ID));
+
+    // openai / amazon-bedrock / ollama / lmstudio + 4 跨厂商 = 8。
+    assert_eq!(providers.len(), 8);
+
+    // 各 provider 的 wire 协议应能正确路由到对应 adapter。
+    assert_eq!(providers[ANTHROPIC_PROVIDER_ID].wire_api, WireApi::Anthropic);
+    assert_eq!(providers[GLM_PROVIDER_ID].wire_api, WireApi::Chat);
+    assert_eq!(providers[MINIMAX_PROVIDER_ID].wire_api, WireApi::Chat);
+    assert_eq!(providers[MOONSHOT_PROVIDER_ID].wire_api, WireApi::Chat);
+
+    // Anthropic Messages 的 max_tokens 必填，构造时应给了兜底上限。
+    assert_eq!(providers[ANTHROPIC_PROVIDER_ID].max_output_tokens, Some(4096));
+}
+
+#[test]
 fn test_merge_configured_model_providers_adds_custom_provider() {
     let custom_provider = ModelProviderInfo {
         name: "Custom".to_string(),

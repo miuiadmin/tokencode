@@ -105,6 +105,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         auto_review_model_override: None,
         tool_mode: None,
         multi_agent_version: None,
+        provider_id: None,
     }
 }
 
