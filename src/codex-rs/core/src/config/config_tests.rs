@@ -4522,7 +4522,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
     let codex_home = TempDir::new()?;
     let user_file = AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home.path());
     let project_dot_codex =
-        AbsolutePathBuf::resolve_path_against_base("project/.codex", codex_home.path());
+        AbsolutePathBuf::resolve_path_against_base("project/.tokencode", codex_home.path());
     let mcp_requirements = BTreeMap::from([
         (
             "session_overrides_user".to_string(),
