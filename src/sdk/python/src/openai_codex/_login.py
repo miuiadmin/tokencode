@@ -22,7 +22,7 @@ class _AsyncLoginOwner(Protocol):
     _client: AsyncCodexClient
 
     async def _ensure_initialized(self) -> None:
-        """Ensure the owning SDK client has a live Codex connection."""
+        """Ensure the owning SDK client has a live TokenCode connection."""
         ...
 
 

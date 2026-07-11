@@ -78,7 +78,7 @@ The presets are:
 - `Sandbox.workspace_write`: the normal default for projects with a recorded trust decision; read files and write inside the workspace and configured writable roots.
 - `Sandbox.full_access`: run without filesystem access restrictions.
 
-When `sandbox=` is omitted, Codex uses its configured default. A turn
+When `sandbox=` is omitted, TokenCode uses its configured default. A turn
 sandbox override applies to that turn and subsequent turns.
 
 ## Why only `thread_start(...)` and `thread_resume(...)`?
@@ -98,7 +98,7 @@ Common causes:
 
 - installation is incomplete and the pinned `openai-codex-cli-bin` dependency is missing
 - local `codex_bin` override points to a missing file
-- a custom local Codex executable does not support the SDK operation being used
+- a custom local TokenCode executable does not support the SDK operation being used
 
 ## Why does a turn "hang"?
 

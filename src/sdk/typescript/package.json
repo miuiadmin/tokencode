@@ -1,7 +1,7 @@
 {
   "name": "tokencode-sdk",
   "version": "0.0.0-dev",
-  "description": "TypeScript SDK for Codex APIs.",
+  "description": "TypeScript SDK for TokenCode APIs.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/miuiadmin/tokencode.git",

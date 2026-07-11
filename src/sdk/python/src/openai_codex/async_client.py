@@ -57,12 +57,12 @@ class AsyncCodexClient:
         self._sync = CodexClient(config=config)
 
     async def __aenter__(self) -> "AsyncCodexClient":
-        """Start the Codex process when entering an async context."""
+        """Start the TokenCode process when entering an async context."""
         await self.start()
         return self
 
     async def __aexit__(self, _exc_type, _exc, _tb) -> None:
-        """Close the Codex process when leaving an async context."""
+        """Close the TokenCode process when leaving an async context."""
         await self.close()
 
     async def _call_sync(
@@ -94,7 +94,7 @@ class AsyncCodexClient:
         await self._call_sync(self._sync.close)
 
     async def initialize(self) -> InitializeResponse:
-        """Initialize the Codex session."""
+        """Initialize the TokenCode session."""
         return await self._call_sync(self._sync.initialize)
 
     def register_turn_notifications(self, turn_id: str) -> None:

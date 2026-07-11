@@ -18,7 +18,7 @@ class JsonRpcError(CodexError):
 
 
 class TransportClosedError(CodexError):
-    """Raised when the Codex transport closes unexpectedly."""
+    """Raised when the TokenCode transport closes unexpectedly."""
 
 
 class CodexRpcError(JsonRpcError):

@@ -1,6 +1,6 @@
-# OpenAI Codex Python SDK (Beta)
+# TokenCode Python SDK (Beta)
 
-Build Python applications that start Codex threads, run turns, stream progress,
+Build Python applications that start TokenCode threads, run turns, stream progress,
 and control workspace access.
 
 ## Install
@@ -13,7 +13,7 @@ pip install openai-codex
 
 ## Quickstart
 
-The SDK reuses your existing Codex authentication when one is already
+The SDK reuses your existing TokenCode authentication when one is already
 available:
 
 ```python
@@ -30,7 +30,7 @@ collected items, and token usage.
 
 ## Authentication
 
-Existing Codex authentication is reused automatically. To start ChatGPT
+Existing TokenCode authentication is reused automatically. To start ChatGPT
 browser login explicitly:
 
 ```python
@@ -65,10 +65,10 @@ Use Python's standard `help(openai_codex)`, `help(Codex)`, or
 
 ## Documentation
 
-- [Getting started](https://github.com/openai/codex/blob/main/sdk/python/docs/getting-started.md)
-- [API reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md)
-- [FAQ](https://github.com/openai/codex/blob/main/sdk/python/docs/faq.md)
-- [Examples](https://github.com/openai/codex/blob/main/sdk/python/examples/README.md)
+- [Getting started](https://github.com/miuiadmin/tokencode/blob/main/src/sdk/python/docs/getting-started.md)
+- [API reference](https://github.com/miuiadmin/tokencode/blob/main/src/sdk/python/docs/api-reference.md)
+- [FAQ](https://github.com/miuiadmin/tokencode/blob/main/src/sdk/python/docs/faq.md)
+- [Examples](https://github.com/miuiadmin/tokencode/blob/main/src/sdk/python/examples/README.md)
 
 The package is licensed under the
-[repository Apache License 2.0](https://github.com/openai/codex/blob/main/LICENSE).
+[repository Apache License 2.0](https://github.com/miuiadmin/tokencode/blob/main/src/LICENSE).

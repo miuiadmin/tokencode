@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide gets a published OpenAI Codex Python SDK beta installation running
+This guide gets a published TokenCode Python SDK beta installation running
 with a multi-turn thread.
 
 ## 1. Install
@@ -14,7 +14,7 @@ pip install openai-codex
 Requirements:
 
 - Python `>=3.10`
-- An existing Codex account session, or one of the login flows below
+- An existing TokenCode account session, or one of the login flows below
 
 The SDK installs its compatible `openai-codex-cli-bin` runtime dependency
 automatically. While beta releases are the only published SDK releases, this
@@ -23,7 +23,7 @@ use `pip install --pre openai-codex` to opt into a newer prerelease.
 
 ## 2. Authenticate When Needed
 
-Existing Codex authentication is reused automatically. For ChatGPT browser
+Existing TokenCode authentication is reused automatically. For ChatGPT browser
 login:
 
 ```python
@@ -92,7 +92,7 @@ Available presets:
   configured writable roots; this is the normal default for workspace work.
 - `Sandbox.full_access`: run without filesystem access restrictions.
 
-When `sandbox=` is omitted, Codex uses its configured default. A turn override
+When `sandbox=` is omitted, TokenCode uses its configured default. A turn override
 also applies to subsequent turns on that thread.
 
 ## 5. Continue A Thread

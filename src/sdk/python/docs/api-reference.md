@@ -1,6 +1,6 @@
-# OpenAI Codex Python SDK (Beta) - API Reference
+# TokenCode Python SDK (Beta) - API Reference
 
-Public surface of `openai_codex` for Codex workflows.
+Public surface of `openai_codex` for TokenCode workflows.
 
 This SDK is in beta. Public APIs may change before `1.0`. Turn streams are routed by turn ID so one client can consume multiple active turns concurrently.
 Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optional `approval_mode` override.
@@ -48,7 +48,7 @@ from openai_codex.types import (
 
 - Version: `openai_codex.__version__`
 - Requires Python >= 3.10
-- Public Codex protocol value and event types live in `openai_codex.types`
+- Public TokenCode protocol value and event types live in `openai_codex.types`
 
 ## Codex (sync)
 
@@ -202,7 +202,7 @@ Presets:
 - `Sandbox.workspace_write`: the normal default for projects with a recorded trust decision; read files and write inside the workspace and configured writable roots.
 - `Sandbox.full_access`: run without filesystem access restrictions.
 
-When `sandbox=` is omitted, Codex uses its configured default. A sandbox
+When `sandbox=` is omitted, TokenCode uses its configured default. A sandbox
 passed to `run(...)` or `turn(...)` applies to that turn and subsequent turns.
 
 ## TurnHandle / AsyncTurnHandle
@@ -253,7 +253,7 @@ Use a plain `str` as shorthand for `TextInput(...)` anywhere a turn input is acc
 
 ## Public Types
 
-The SDK wrappers return and accept public Codex protocol models wherever possible:
+The SDK wrappers return and accept public TokenCode protocol models wherever possible:
 
 ```python
 from openai_codex.types import (

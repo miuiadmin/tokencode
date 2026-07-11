@@ -1,4 +1,4 @@
-"""Python SDK for running Codex workflows.
+"""Python SDK for running TokenCode workflows.
 
 Start with :class:`Codex` for synchronous applications or
 :class:`AsyncCodex` for async applications. Most programs create a thread and

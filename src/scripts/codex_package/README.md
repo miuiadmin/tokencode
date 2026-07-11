@@ -1,10 +1,10 @@
-# Codex package builder
+# TokenCode package builder
 
 This package contains the implementation behind `scripts/build_codex_package.py`.
 The top-level script is the stable executable entry point; these modules keep the
 package-building logic split by responsibility.
 
-The builder creates a canonical Codex package directory:
+The builder creates a canonical TokenCode package directory:
 
 ```text
 .
@@ -24,7 +24,7 @@ The package directory is the primary artifact. Archive formats such as
 `.tar.gz`, `.tar.zst`, and `.zip` are serializations of that directory.
 
 If `--target` is omitted, the builder uses the release target for the current
-host platform. On Linux, that default is a musl target to match Codex release
+host platform. On Linux, that default is a musl target to match TokenCode release
 artifacts; pass a GNU Linux target explicitly for native glibc local builds. If
 `--package-dir` is omitted, the builder creates a new temporary directory and
 prints its path after the package is built.
@@ -57,7 +57,7 @@ Windows packages. This keeps package archive creation as a pure staging step
 after signing instead of rebuilding resources.
 
 When the builder source-builds an entrypoint for a Darwin or Linux target, it
-downloads and verifies the matching Codex-built V8 release pair before invoking
+downloads and verifies the matching TokenCode-built V8 release pair before invoking
 Cargo and sets `RUSTY_V8_ARCHIVE` plus `RUSTY_V8_SRC_BINDING_PATH` for that
 build. Windows targets keep Cargo's release-build MSVC artifact path. Explicit
 overrides remain authoritative when both variables are already set. Set

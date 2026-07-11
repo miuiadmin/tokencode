@@ -8,7 +8,7 @@ Bazel consumer builds use:
 
 Local Cargo builds still use upstream prebuilt `rusty_v8` archives by default.
 Selected Cargo CI, release, and package builds override
-`RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` with Codex release assets. Bazel
+`RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` with TokenCode release assets. Bazel
 sets those variables independently in `MODULE.bazel` to select source-built
 local archives and bindings for its consumer builds.
 
@@ -89,7 +89,7 @@ The same run also builds the matching sandbox pair targets:
 The workflow also builds sandbox-enabled
 `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` archive/binding pairs
 from upstream `rusty_v8` source. Those ABI-specific outputs cannot be produced
-by Codex's Bazel Windows GNU toolchain.
+by TokenCode's Bazel Windows GNU toolchain.
 
 The Bazel graph pins the same libc++, libc++abi, and llvm-libc source revisions
 used by `rusty_v8 v149.2.0`, compiles published artifact targets with

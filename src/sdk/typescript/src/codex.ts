@@ -4,7 +4,7 @@ import { Thread } from "./thread";
 import { ThreadOptions } from "./threadOptions";
 
 /**
- * Codex is the main class for interacting with the Codex agent.
+ * Codex is the main class for interacting with the TokenCode agent.
  *
  * Use the `startThread()` method to start a new thread or `resumeThread()` to resume a previously started thread.
  */
@@ -28,7 +28,7 @@ export class Codex {
 
   /**
    * Resumes a conversation with an agent based on the thread id.
-   * Threads are persisted in ~/.codex/sessions.
+   * Threads are persisted in ~/.tokencode/sessions.
    *
    * @param id The id of the thread to resume.
    * @returns A new thread instance.
