@@ -1,5 +1,5 @@
 # sandbox_smoketests.py
-# Run a suite of smoke tests against the Windows sandbox via the Codex CLI
+# Run a suite of smoke tests against the Windows sandbox via the TokenCode CLI
 # Requires: Python 3.8+ on Windows. No pip requirements.
 
 import os
@@ -15,35 +15,35 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 def _resolve_codex_cmd() -> List[str]:
-    """Resolve the Codex CLI to invoke `codex sandbox windows`.
+    """Resolve the TokenCode CLI to invoke`tokencode sandbox windows`.
 
     Prefer local builds (debug first), then fall back to PATH.
-    Returns the argv prefix to run Codex.
+    Returns the argv prefix to run TokenCode.
     """
     root = Path(__file__).parent
     ws_root = root.parent
     cargo_target = os.environ.get("CARGO_TARGET_DIR")
 
     candidates = [
-        ws_root / "target" / "debug" / "codex.exe",
-        ws_root / "target" / "release" / "codex.exe",
+        ws_root / "target" / "debug" / "tokencode.exe",
+        ws_root / "target" / "release" / "tokencode.exe",
     ]
     if cargo_target:
         cargo_base = Path(cargo_target)
         candidates.extend([
-            cargo_base / "debug" / "codex.exe",
-            cargo_base / "release" / "codex.exe",
+            cargo_base / "debug" / "tokencode.exe",
+            cargo_base / "release" / "tokencode.exe",
         ])
 
     for candidate in candidates:
         if candidate.exists():
             return [str(candidate)]
 
-    if shutil.which("codex"):
-        return ["codex"]
+    if shutil.which("tokencode"):
+        return ["tokencode"]
 
     raise FileNotFoundError(
-        "Codex CLI not found. Build it first, e.g.\n"
+        "TokenCode CLI not found. Build it first, e.g.\n"
         "  cargo build -p codex-cli --release\n"
         "or for debug:\n"
         "  cargo build -p codex-cli\n"
@@ -74,7 +74,7 @@ def run_sbx(
     env.update(ENV_BASE)
     if env_extra:
         env.update(env_extra)
-    # Map policy to codex CLI overrides.
+    # Map policy to tokencode CLI overrides.
     # read-only => default; workspace-write => legacy sandbox_mode override
     if policy not in ("read-only", "workspace-write"):
         raise ValueError(f"unknown policy: {policy}")
@@ -508,17 +508,17 @@ def main() -> int:
     rc, out, err = run_sbx("workspace-write", ["cmd", "/c", "echo hack > .GiT\\config"], WS_ROOT)
     add("WS: protected path case-variation denied", rc != 0 and assert_not_exists(git_variation), f"rc={rc}")
 
-    # 34. WS: policy tamper (.codex artifacts) denied
-    codex_home = Path(os.environ["USERPROFILE"]) / ".codex"
+    # 34. WS: policy tamper (.tokencode artifacts) denied
+    codex_home = Path(os.environ["USERPROFILE"]) / ".tokencode"
     cap_sid_target = codex_home / "cap_sid"
     rc, out, err = run_sbx(
         "workspace-write",
         ["cmd", "/c", f"echo tamper > \"{cap_sid_target}\""],
         WS_ROOT,
     )
-    rc2, out2, err2 = run_sbx("workspace-write", ["cmd", "/c", "echo tamper > .codex\\policy.json"], WS_ROOT)
-    add("WS: .codex cap_sid tamper denied", rc != 0, f"rc={rc}, err={err}")
-    add("WS: .codex policy tamper denied", rc2 != 0, f"rc={rc2}, err={err2}")
+    rc2, out2, err2 = run_sbx("workspace-write", ["cmd", "/c", "echo tamper > .tokencode\\policy.json"], WS_ROOT)
+    add("WS: .tokencode cap_sid tamper denied", rc != 0, f"rc={rc}, err={err}")
+    add("WS: .tokencode policy tamper denied", rc2 != 0, f"rc={rc2}, err={err2}")
 
     # 35. WS: PATH stub bypass denied (ssh before stubs)
     tools_dir = WS_ROOT / "tools"

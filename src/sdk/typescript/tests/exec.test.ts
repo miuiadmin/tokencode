@@ -67,7 +67,7 @@ describe("CodexExec", () => {
     expect(result.status).toBe("rejected");
     if (result.status === "rejected") {
       expect(result.error).toBeInstanceOf(Error);
-      expect(result.error.message).toMatch(/Codex Exec exited/);
+      expect(result.error.message).toMatch(/TokenCode Exec exited/);
     }
   });
 
@@ -97,7 +97,7 @@ describe("CodexExec", () => {
     expect(resumeIndex).toBeLessThan(imageIndex);
   });
 
-  it("allows overriding the env passed to the Codex CLI", async () => {
+  it("allows overriding the env passed to the TokenCode CLI", async () => {
     const { CodexExec } = await import("../src/exec");
     spawnMock.mockClear();
     const child = new FakeChildProcess();

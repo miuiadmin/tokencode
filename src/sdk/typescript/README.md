@@ -1,6 +1,6 @@
-# Codex SDK
+# TokenCode SDK
 
-Embed the Codex agent in your workflows and apps.
+Embed the TokenCode agent in your workflows and apps.
 
 The TypeScript SDK wraps the `tokencode` CLI from `tokencode`. It spawns the CLI and exchanges JSONL events over stdin/stdout.
 
@@ -52,7 +52,7 @@ for await (const event of events) {
 
 ### Structured output
 
-The Codex agent can produce a JSON response that conforms to a specified schema. The schema can be provided for each turn as a plain JSON object.
+The TokenCode agent can produce a JSON response that conforms to a specified schema. The schema can be provided for each turn as a plain JSON object.
 
 ```typescript
 const schema = {
@@ -85,7 +85,7 @@ console.log(turn.finalResponse);
 
 ### Attaching images
 
-Provide structured input entries when you need to include images alongside text. Text entries are concatenated into the final prompt while image entries are passed to the Codex CLI via `--image`.
+Provide structured input entries when you need to include images alongside text. Text entries are concatenated into the final prompt while image entries are passed to the TokenCode CLI via `--image`.
 
 ```typescript
 const turn = await thread.run([
@@ -107,7 +107,7 @@ await thread.run("Implement the fix");
 
 ### Working directory controls
 
-Codex runs in the current working directory by default. To avoid unrecoverable errors, Codex requires the working directory to be a Git repository. You can skip the Git repository check by passing the `skipGitRepoCheck` option when creating a thread.
+TokenCode runs in the current working directory by default. To avoid unrecoverable errors, TokenCode requires the working directory to be a Git repository. You can skip the Git repository check by passing the `skipGitRepoCheck` option when creating a thread.
 
 ```typescript
 const thread = codex.startThread({
@@ -116,9 +116,9 @@ const thread = codex.startThread({
 });
 ```
 
-### Controlling the Codex CLI environment
+### Controlling the TokenCode CLI environment
 
-By default, the Codex CLI inherits the Node.js process environment. Provide the optional `env` parameter when instantiating the
+By default, the TokenCode CLI inherits the Node.js process environment. Provide the optional `env` parameter when instantiating the
 `Codex` client to fully control which variables the CLI receives—useful for sandboxed hosts like Electron apps.
 
 ```typescript
@@ -134,7 +134,7 @@ The SDK still injects its required variables (such as `CODEX_API_KEY`) on top of
 
 ### Passing `--config` overrides
 
-Use the `config` option to provide additional Codex CLI configuration overrides. The SDK accepts a JSON object, flattens it
+Use the `config` option to provide additional TokenCode CLI configuration overrides. The SDK accepts a JSON object, flattens it
 into dotted paths, and serializes values as TOML literals before passing them as repeated `--config key=value` flags.
 
 ```typescript
