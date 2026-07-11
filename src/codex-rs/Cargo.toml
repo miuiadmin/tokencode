@@ -525,15 +525,6 @@ opt-level = 0
 debug = "none"
 strip = "symbols"
 
-# 临时 profile：重生 release-only snapshot 用，用完即删
-[profile.reltest]
-inherits = "release"
-opt-level = 0
-debug = "none"
-strip = "symbols"
-lto = false
-codegen-units = 256
-
 [profile.release]
 lto = "thin"
 debug = "line-tables-only"
