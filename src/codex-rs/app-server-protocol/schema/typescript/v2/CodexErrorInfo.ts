@@ -4,7 +4,7 @@
 import type { NonSteerableTurnKind } from "./NonSteerableTurnKind";
 
 /**
- * This translation layer make sure that we expose codex error code in camel case.
+ * This translation layer make sure that we expose tokencode error code in camel case.
  *
  * When an upstream HTTP status is available (for example, from the Responses API or a provider),
  * it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.

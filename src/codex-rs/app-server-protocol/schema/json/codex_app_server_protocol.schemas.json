@@ -106,7 +106,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "previousAccountId": {
-          "description": "Workspace/account identifier that Codex was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint to refresh the token for the correct workspace.\n\nThis may be `null` when the prior auth state did not include a workspace identifier (`chatgpt_account_id`).",
+          "description": "Workspace/account identifier that TokenCode was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint to refresh the token for the correct workspace.\n\nThis may be `null` when the prior auth state did not include a workspace identifier (`chatgpt_account_id`).",
           "type": [
             "string",
             "null"
@@ -125,7 +125,7 @@
     "ChatgptAuthTokensRefreshReason": {
       "oneOf": [
         {
-          "description": "Codex attempted a backend request and received `401 Unauthorized`.",
+          "description": "TokenCode attempted a backend request and received `401 Unauthorized`.",
           "enum": [
             "unauthorized"
           ],
@@ -3739,7 +3739,7 @@
           "type": "string"
         },
         "turnId": {
-          "description": "Active Codex turn when this elicitation was observed, if app-server could correlate one.\n\nThis is nullable because MCP models elicitation as a standalone server-to-client request identified by the MCP server request id. It may be triggered during a turn, but turn context is app-server correlation rather than part of the protocol identity of the elicitation itself.",
+          "description": "Active TokenCode turn when this elicitation was observed, if app-server could correlate one.\n\nThis is nullable because MCP models elicitation as a standalone server-to-client request identified by the MCP server request id. It may be triggered during a turn, but turn context is app-server correlation rather than part of the protocol identity of the elicitation itself.",
           "type": [
             "string",
             "null"
@@ -6930,14 +6930,14 @@
         "description": "Authentication mode for OpenAI-backed providers.",
         "oneOf": [
           {
-            "description": "OpenAI API key provided by the caller and stored by Codex.",
+            "description": "OpenAI API key provided by the caller and stored by TokenCode.",
             "enum": [
               "apikey"
             ],
             "type": "string"
           },
           {
-            "description": "ChatGPT OAuth managed by Codex (tokens persisted and refreshed by Codex).",
+            "description": "ChatGPT OAuth managed by TokenCode (tokens persisted and refreshed by TokenCode).",
             "enum": [
               "chatgpt"
             ],
@@ -6951,21 +6951,21 @@
             "type": "string"
           },
           {
-            "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+            "description": "Programmatic TokenCode auth backed by a registered Agent Identity.",
             "enum": [
               "agentIdentity"
             ],
             "type": "string"
           },
           {
-            "description": "Programmatic Codex auth backed by a personal access token.",
+            "description": "Programmatic TokenCode auth backed by a personal access token.",
             "enum": [
               "personalAccessToken"
             ],
             "type": "string"
           },
           {
-            "description": "Amazon Bedrock bearer token managed by Codex.",
+            "description": "Amazon Bedrock bearer token managed by TokenCode.",
             "enum": [
               "bedrockApiKey"
             ],
@@ -7083,7 +7083,7 @@
         ]
       },
       "CodexErrorInfo": {
-        "description": "This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.",
+        "description": "This translation layer make sure that we expose tokencode error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.",
         "oneOf": [
           {
             "enum": [
@@ -7268,7 +7268,7 @@
         "type": "string"
       },
       "CollaborationMode": {
-        "description": "Collaboration mode for a Codex session.",
+        "description": "Collaboration mode for a TokenCode session.",
         "properties": {
           "mode": {
             "$ref": "#/definitions/v2/ModeKind"
@@ -8193,7 +8193,7 @@
             "type": "object"
           },
           {
-            "description": "Path to a .codex/ folder within a project. There could be multiple of these between `cwd` and the project/repo root.",
+            "description": "Path to a .tokencode/ folder within a project. There could be multiple of these between `cwd` and the project/repo root.",
             "properties": {
               "dotCodexFolder": {
                 "$ref": "#/definitions/v2/AbsolutePathBuf"
@@ -11530,7 +11530,7 @@
             "type": "object"
           },
           {
-            "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE. The access token must contain the same scopes that Codex-managed ChatGPT auth tokens have.",
+            "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE. The access token must contain the same scopes that TokenCode-managed ChatGPT auth tokens have.",
             "properties": {
               "accessToken": {
                 "description": "Access token (JWT) supplied by the client. This token is used for backend API requests and email extraction.",
@@ -11541,7 +11541,7 @@
                 "type": "string"
               },
               "chatgptPlanType": {
-                "description": "Optional plan type supplied by the client.\n\nWhen `null`, Codex attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
+                "description": "Optional plan type supplied by the client.\n\nWhen `null`, TokenCode attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
                 "type": [
                   "string",
                   "null"
@@ -13284,7 +13284,7 @@
             "type": "string"
           },
           {
-            "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. Codex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
+            "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. TokenCode app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
             "enum": [
               "AVAILABLE"
             ],
@@ -17030,7 +17030,7 @@
             "description": "Optional Git metadata captured when the thread was created."
           },
           "id": {
-            "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
+            "description": "Identifier for this thread. TokenCode-generated thread IDs are UUIDv7.",
             "type": "string"
           },
           "modelProvider": {
@@ -17080,7 +17080,7 @@
                 "$ref": "#/definitions/v2/SessionSource"
               }
             ],
-            "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+            "description": "Origin of the thread (CLI, VSCode, tokencode exec, tokencode app-server, etc.)."
           },
           "status": {
             "allOf": [
@@ -19918,7 +19918,7 @@
             "description": "Only populated when the Turn's status is failed."
           },
           "id": {
-            "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
+            "description": "Identifier for this turn. TokenCode-generated turn IDs are UUIDv7.",
             "type": "string"
           },
           "items": {
