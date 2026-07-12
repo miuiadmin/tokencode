@@ -58,8 +58,9 @@ impl AnthropicAuth {
 /// 大小写不敏感地剥离 `Bearer ` 前缀；非该前缀则原样返回（视作裸 key，兼容非 Bearer 形态）。
 ///
 /// 用 `get(..PREFIX.len())` 而非 `raw[..PREFIX.len()]`：前者在字节边界不在字符边界时返回
-/// None（安全），后者会 panic。现网调用点经 `HeaderValue::to_str()` 只产可见 ASCII（恒在边界），
-/// 但本函数签名接受任意 `&str`，`get` 让任意复用都 panic-safe。
+/// None（安全），后者会 panic。现网调用点经 `HeaderValue::to_str()` 只产单字节 ASCII（可见
+/// 字符与制表符 0x09，恒在字节边界），但本函数签名接受任意 `&str`，`get` 让任意复用都
+/// panic-safe。
 fn strip_bearer_prefix(raw: &str) -> &str {
     const PREFIX: &str = "bearer ";
     match raw.get(..PREFIX.len()) {
