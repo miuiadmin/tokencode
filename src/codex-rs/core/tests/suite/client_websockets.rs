@@ -10,6 +10,7 @@ use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_otel::MetricsClient;
@@ -1052,6 +1053,64 @@ async fn responses_websocket_v2_incremental_requests_are_reused_across_turns() {
     assert_eq!(
         third["input"],
         serde_json::to_value(&prompt_three.input[4..]).unwrap()
+    );
+
+    server.shutdown().await;
+}
+
+/// 回归：provider 切换后，缓存的 WS 连接因 provider 指纹不同被弃用并重建。
+///
+/// turn-1 用会话默认 provider（指纹含 name `mock-ws`）建第一条连接，drop 时回存 client 缓存；
+/// turn-2 经 `with_provider` 注入仅 name 不同的 provider（base_url 不变仍命中同一 server）→
+/// 指纹变化。`websocket_connection` 比对 `connection_provider_key` 命中不一致 → 弃旧连接、
+/// 按新 provider 指纹建第二条连接。若此指纹隔离被破坏，turn-2 会复用旧连接（handshakes==1）。
+///
+/// 注意：mock server 默认 `close_after_requests=true` 会在 turn-1 后关掉 connection 1，但这
+/// 不影响本测试——`is_closed()`（`responses_websocket.rs`）只追踪 client 侧 stream 是否被取出，
+/// 不检测 server 关闭帧；turn-1 成功路径不取走 stream，故 turn-2 时 `is_closed()=false`，
+/// 重连仅由 provider 指纹不一致触发，而非 server 关连接。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_reconnects_after_provider_switch() {
+    skip_if_no_network!();
+
+    // 两条独立连接脚本：turn-1 消费第一条，turn-2 重建消费第二条。
+    let server = start_websocket_server(vec![
+        vec![vec![ev_response_created("resp-1"), ev_completed("resp-1")]],
+        vec![vec![ev_response_created("resp-2"), ev_completed("resp-2")]],
+    ])
+    .await;
+
+    let harness = websocket_harness(&server).await;
+
+    // turn-1：默认 provider（指纹 mock-ws/<url>/Responses）建立第一条 WS 连接。
+    let prompt_one = prompt_with_input(vec![message_item("hello")]);
+    {
+        let mut client_session = harness.client.new_session();
+        stream_until_complete(&mut client_session, &harness, &prompt_one).await;
+    }
+    // client_session drop → WS 连接连同 provider A 指纹回存 client 缓存。
+
+    // turn-2：构造仅 name 不同的 provider（base_url 不变 → 命中同一 server；指纹含 name 故变化）。
+    let mut provider_b_info = websocket_provider(&server);
+    provider_b_info.name = "mock-ws-other".into();
+    let provider_b = create_model_provider(provider_b_info, /*auth_manager*/ None);
+
+    let prompt_two = prompt_with_input(vec![message_item("world")]);
+    {
+        let mut client_session = harness.client.new_session().with_provider(provider_b);
+        stream_until_complete(&mut client_session, &harness, &prompt_two).await;
+    }
+
+    // turn-2 取到缓存连接（指纹 A）但 turn 级 provider 指纹为 B → 必须弃旧重建。
+    assert_eq!(
+        server.handshakes().len(),
+        2,
+        "provider 切换后应建立第二条 WS 连接：旧连接按 provider 指纹隔离被弃"
+    );
+    assert_eq!(
+        server.connections().len(),
+        2,
+        "两条连接分别绑定各自的 provider 指纹"
     );
 
     server.shutdown().await;
