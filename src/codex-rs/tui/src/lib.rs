@@ -9,8 +9,6 @@ use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::ConfigTomlLoadResult;
 use crate::legacy_core::config::load_config_toml_with_layer_stack;
-use crate::legacy_core::config::resolve_bootstrap_auth_keyring_backend_kind;
-use crate::legacy_core::config::resolve_bootstrap_auth_route_config;
 use crate::legacy_core::config::resolve_oss_provider;
 use crate::legacy_core::config::resolve_profile_v2_config_path;
 use crate::legacy_core::format_exec_policy_error_with_source;
@@ -38,7 +36,6 @@ use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey as AppServerThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
-use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
@@ -958,29 +955,7 @@ pub async fn run_main(
     .await;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
 
-    let chatgpt_base_url = bootstrap_config_toml
-        .chatgpt_base_url
-        .clone()
-        .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string());
-    let auth_route_config = resolve_bootstrap_auth_route_config(
-        bootstrap_config_toml,
-        bootstrap_config
-            .config_layer_stack
-            .requirements()
-            .feature_requirements
-            .as_ref(),
-    )?;
-    let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-        codex_home.to_path_buf(),
-        /*enable_codex_api_key_env*/ false,
-        bootstrap_config_toml
-            .cli_auth_credentials_store
-            .unwrap_or_default(),
-        resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
-        chatgpt_base_url,
-        auth_route_config,
-    )
-    .await;
+    let cloud_config_bundle = CloudConfigBundleLoader::default();
 
     let cwd_override = if app_server_target.uses_remote_workspace() {
         None
@@ -1439,15 +1414,7 @@ async fn run_ratatui_app(
         // and rebuild config. This avoids missing newly available cloud-managed policy due to login
         // status detection edge cases.
         if show_login_screen && !uses_remote_workspace {
-            cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-                initial_config.codex_home.to_path_buf(),
-                /*enable_codex_api_key_env*/ false,
-                initial_config.cli_auth_credentials_store_mode,
-                initial_config.auth_keyring_backend_kind(),
-                initial_config.chatgpt_base_url.clone(),
-                initial_config.auth_route_config(),
-            )
-            .await;
+            cloud_config_bundle = CloudConfigBundleLoader::default();
         }
 
         // If the user made an explicit trust decision, or we showed the login flow, reload config

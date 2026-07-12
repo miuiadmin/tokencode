@@ -66,7 +66,6 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
-use codex_chatgpt::workspace_settings;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
@@ -396,8 +395,6 @@ impl MessageProcessor {
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
-        let workspace_settings_cache =
-            Arc::new(workspace_settings::WorkspaceSettingsCache::default());
         let app_list_shutdown_token = CancellationToken::new();
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
@@ -411,7 +408,6 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             outgoing.clone(),
             config_manager.clone(),
-            Arc::clone(&workspace_settings_cache),
             app_list_shutdown_token,
         );
         let catalog_processor = CatalogRequestProcessor::new(
@@ -421,7 +417,6 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             Arc::clone(&config),
             config_manager.clone(),
-            Arc::clone(&workspace_settings_cache),
         );
         let command_exec_processor = CommandExecRequestProcessor::new(
             arg0_paths.clone(),
@@ -467,7 +462,6 @@ impl MessageProcessor {
             outgoing.clone(),
             analytics_events_client.clone(),
             config_manager.clone(),
-            workspace_settings_cache,
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
@@ -1419,25 +1413,23 @@ impl MessageProcessor {
             ClientRequest::GetAuthStatus { params, .. } => {
                 self.account_processor.get_auth_status(params).await
             }
-            ClientRequest::GetAccountRateLimits { .. } => {
-                self.account_processor.get_account_rate_limits().await
+            ClientRequest::GetAccountRateLimits { .. } => Err(invalid_request(
+                "account rate limits require ChatGPT account authentication",
+            )),
+            ClientRequest::ConsumeAccountRateLimitResetCredit { .. } => {
+                Err(invalid_request(
+                    "rate limit reset credits require ChatGPT account authentication",
+                ))
             }
-            ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
-                self.account_processor
-                    .consume_account_rate_limit_reset_credit(params)
-                    .await
-            }
-            ClientRequest::GetAccountTokenUsage { .. } => {
-                self.account_processor.get_account_token_usage().await
-            }
-            ClientRequest::GetWorkspaceMessages { .. } => {
-                self.account_processor.get_workspace_messages().await
-            }
-            ClientRequest::SendAddCreditsNudgeEmail { params, .. } => {
-                self.account_processor
-                    .send_add_credits_nudge_email(params)
-                    .await
-            }
+            ClientRequest::GetAccountTokenUsage { .. } => Err(invalid_request(
+                "account token usage requires ChatGPT account authentication",
+            )),
+            ClientRequest::GetWorkspaceMessages { .. } => Err(invalid_request(
+                "workspace messages require ChatGPT account authentication",
+            )),
+            ClientRequest::SendAddCreditsNudgeEmail { .. } => Err(invalid_request(
+                "add credits nudge email requires ChatGPT account authentication",
+            )),
             ClientRequest::GitDiffToRemote { params, .. } => {
                 self.git_processor.git_diff_to_remote(params).await
             }

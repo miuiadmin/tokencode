@@ -91,6 +91,7 @@ mod config_layer;
 mod config_manager;
 mod config_manager_service;
 mod connection_cleanup;
+mod connectors_helpers;
 mod connection_rpc_gate;
 mod current_time;
 mod dynamic_tools;

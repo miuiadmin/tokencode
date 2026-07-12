@@ -34,7 +34,6 @@ pub(crate) struct PluginRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
     config_manager: ConfigManager,
-    workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
 }
 
 fn plugin_skills_to_info(
@@ -355,7 +354,6 @@ impl PluginRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
     ) -> Self {
         Self {
             auth_manager,
@@ -363,7 +361,6 @@ impl PluginRequestProcessor {
             outgoing,
             analytics_events_client,
             config_manager,
-            workspace_settings_cache,
         }
     }
 
@@ -515,24 +512,11 @@ impl PluginRequestProcessor {
 
     async fn workspace_codex_plugins_enabled(
         &self,
-        config: &Config,
-        auth: Option<&CodexAuth>,
+        _config: &Config,
+        _auth: Option<&CodexAuth>,
     ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace TokenCode plugins setting; allowing TokenCode plugins: {err:#}"
-                );
-                true
-            }
-        }
+        // API key 鉴权模式下无云端工作区设置，TokenCode plugins 默认启用。
+        true
     }
 
     async fn plugin_list_response(
@@ -1685,10 +1669,9 @@ impl PluginRequestProcessor {
                     .as_ref()
                     .map(plugin_app_category_by_id_from_value)
                     .unwrap_or_default();
-                let all_connectors = connectors::list_cached_all_connectors(&config, &[])
-                    .await
-                    .unwrap_or_default();
-                connectors::connectors_for_plugin_apps(all_connectors, &plugin_apps)
+                // API key 鉴权模式下无云目录连接器，仅以插件声明合成默认 app 元数据。
+                let all_connectors: Vec<AppInfo> = Vec::new();
+                crate::connectors_helpers::connectors_for_plugin_apps(all_connectors, &plugin_apps)
                     .into_iter()
                     .map(|connector| {
                         let category = app_category_by_id
@@ -1766,29 +1749,19 @@ impl PluginRequestProcessor {
         }
 
         let environment_manager = self.thread_manager.environment_manager();
-        let (all_connectors_result, accessible_connectors_result) = tokio::join!(
-            connectors::list_all_connectors_with_options(config, /*force_refetch*/ false, &[]),
+        // API key 鉴权模式下无云目录，all_connectors 恒为空；只拉取 MCP accessible 连接器。
+        let accessible_connectors_result =
             connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager(
                 config,
                 /*force_refetch*/ true,
                 Arc::clone(&environment_manager),
                 self.thread_manager.mcp_manager(),
-            ),
-        );
+            )
+            .await;
 
-        let all_connectors = match all_connectors_result {
-            Ok(connectors) => connectors,
-            Err(err) => {
-                warn!(
-                    plugin = plugin_id,
-                    "failed to load app metadata after plugin install: {err:#}"
-                );
-                connectors::list_cached_all_connectors(config, &[])
-                    .await
-                    .unwrap_or_default()
-            }
-        };
-        let all_connectors = connectors::connectors_for_plugin_apps(all_connectors, plugin_apps);
+        let all_connectors: Vec<AppInfo> = Vec::new();
+        let all_connectors =
+            crate::connectors_helpers::connectors_for_plugin_apps(all_connectors, plugin_apps);
         let (accessible_connectors, codex_apps_ready) = match accessible_connectors_result {
             Ok(status) => (status.connectors, status.codex_apps_ready),
             Err(err) => {
@@ -2061,7 +2034,7 @@ impl PluginRequestProcessor {
 }
 
 async fn load_plugin_app_summaries(
-    config: &Config,
+    _config: &Config,
     plugin_apps: &[codex_plugin::AppConnectorId],
     app_category_by_id: &HashMap<String, String>,
 ) -> Vec<AppSummary> {
@@ -2069,23 +2042,11 @@ async fn load_plugin_app_summaries(
         return Vec::new();
     }
 
-    let connectors = match connectors::list_all_connectors_with_options(
-        config,
-        /*force_refetch*/ false,
-        &[],
-    )
-    .await
-    {
-        Ok(connectors) => connectors,
-        Err(err) => {
-            warn!("failed to load app metadata for plugin/read: {err:#}");
-            connectors::list_cached_all_connectors(config, &[])
-                .await
-                .unwrap_or_default()
-        }
-    };
+    // API key 鉴权模式下无云目录连接器，仅以插件声明合成默认 app 元数据。
+    let connectors: Vec<AppInfo> = Vec::new();
 
-    let plugin_connectors = connectors::connectors_for_plugin_apps(connectors, plugin_apps);
+    let plugin_connectors =
+        crate::connectors_helpers::connectors_for_plugin_apps(connectors, plugin_apps);
 
     plugin_connectors
         .into_iter()

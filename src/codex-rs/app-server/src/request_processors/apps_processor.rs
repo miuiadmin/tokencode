@@ -6,7 +6,6 @@ pub(crate) struct AppsRequestProcessor {
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
-    workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
     shutdown_token: CancellationToken,
     _shutdown_drop_guard: DropGuard,
 }
@@ -17,7 +16,6 @@ impl AppsRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
         shutdown_token: CancellationToken,
     ) -> Self {
         let shutdown_drop_guard = shutdown_token.clone().drop_guard();
@@ -26,7 +24,6 @@ impl AppsRequestProcessor {
             thread_manager,
             outgoing,
             config_manager,
-            workspace_settings_cache,
             shutdown_token,
             _shutdown_drop_guard: shutdown_drop_guard,
         }
@@ -90,7 +87,6 @@ impl AppsRequestProcessor {
         let outgoing = Arc::clone(&self.outgoing);
         let environment_manager = self.thread_manager.environment_manager();
         let mcp_manager = self.thread_manager.mcp_manager();
-        let plugins_manager = self.thread_manager.plugins_manager();
         let shutdown_token = self.shutdown_token.child_token();
         tokio::spawn(async move {
             tokio::select! {
@@ -102,7 +98,6 @@ impl AppsRequestProcessor {
                     config,
                     environment_manager,
                     mcp_manager,
-                    plugins_manager,
                 ) => {}
             }
         });
@@ -120,20 +115,17 @@ impl AppsRequestProcessor {
         config: Config,
         environment_manager: Arc<EnvironmentManager>,
         mcp_manager: Arc<McpManager>,
-        plugins_manager: Arc<PluginsManager>,
     ) {
         let retry_params = params.clone();
         let retry_config = config.clone();
         let retry_environment_manager = Arc::clone(&environment_manager);
         let retry_mcp_manager = Arc::clone(&mcp_manager);
-        let retry_plugins_manager = Arc::clone(&plugins_manager);
         let result = Self::apps_list_response(
             &outgoing,
             params,
             config,
             environment_manager,
             mcp_manager,
-            plugins_manager,
         )
         .await;
         let should_retry = result
@@ -152,7 +144,6 @@ impl AppsRequestProcessor {
                 retry_config,
                 retry_environment_manager,
                 retry_mcp_manager,
-                retry_plugins_manager,
             )
             .await
             {
@@ -167,7 +158,6 @@ impl AppsRequestProcessor {
         config: Config,
         environment_manager: Arc<EnvironmentManager>,
         mcp_manager: Arc<McpManager>,
-        plugins_manager: Arc<PluginsManager>,
     ) -> Result<(AppsListResponse, bool), JSONRPCErrorError> {
         let AppsListParams {
             cursor,
@@ -183,24 +173,12 @@ impl AppsRequestProcessor {
             None => 0,
         };
 
-        let loaded_plugins = plugins_manager
-            .plugins_for_config(&config.plugins_config_input())
-            .await;
-        let connector_snapshot =
-            codex_connectors::ConnectorSnapshot::from_plugin_capability_summaries(
-                loaded_plugins.capability_summaries(),
-            );
-        let plugin_apps = connector_snapshot.connector_ids().to_vec();
-        let (mut accessible_connectors, mut all_connectors) = tokio::join!(
-            connectors::list_cached_accessible_connectors_from_mcp_tools(&config),
-            connectors::list_cached_all_connectors(&config, &plugin_apps)
-        );
-        let cached_all_connectors = all_connectors.clone();
+        // API key 鉴权模式下不拉取云目录连接器，仅保留 MCP 派生的本地 accessible 连接器。
+        let mut accessible_connectors =
+            connectors::list_cached_accessible_connectors_from_mcp_tools(&config).await;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
         let accessible_config = config.clone();
-        let accessible_tx = tx.clone();
         tokio::spawn(async move {
             let result = connectors::list_accessible_connectors_from_mcp_tools_with_mcp_manager(
                 &accessible_config,
@@ -210,31 +188,19 @@ impl AppsRequestProcessor {
             )
             .await
             .map_err(|err| format!("failed to load accessible apps: {err}"));
-            let _ = accessible_tx.send(AppListLoadResult::Accessible(result));
-        });
-
-        let all_config = config.clone();
-        let all_plugin_apps = plugin_apps.clone();
-        tokio::spawn(async move {
-            let result = connectors::list_all_connectors_with_options(
-                &all_config,
-                force_refetch,
-                &all_plugin_apps,
-            )
-            .await
-            .map_err(|err| format!("failed to list apps: {err}"));
-            let _ = tx.send(AppListLoadResult::Directory(result));
+            let _ = tx.send(AppListLoadResult::Accessible(result));
         });
 
         let app_list_deadline = tokio::time::Instant::now() + APP_LIST_LOAD_TIMEOUT;
         let mut accessible_loaded = false;
-        let mut all_loaded = false;
+        // 无云目录，all_loaded 恒为 true，循环只等 accessible 拉取完成。
+        let all_loaded = true;
         let mut codex_apps_ready = true;
         let mut last_notified_apps = None;
 
-        if accessible_connectors.is_some() || all_connectors.is_some() {
+        if accessible_connectors.is_some() {
             let merged = connectors::with_app_enabled_state(
-                merge_loaded_apps(all_connectors.as_deref(), accessible_connectors.as_deref()),
+                merge_loaded_apps(/*all*/ None, accessible_connectors.as_deref()),
                 &config,
             );
             if should_send_app_list_updated_notification(
@@ -270,30 +236,13 @@ impl AppsRequestProcessor {
                 AppListLoadResult::Accessible(Err(err)) => {
                     return Err(internal_error(err));
                 }
-                AppListLoadResult::Directory(Ok(connectors)) => {
-                    all_connectors = Some(connectors);
-                    all_loaded = true;
-                }
-                AppListLoadResult::Directory(Err(err)) => {
-                    return Err(internal_error(err));
+                AppListLoadResult::Directory(_) => {
+                    // 云目录分支已移除，该变体不会再被生产。
                 }
             }
 
-            let showing_interim_force_refetch = force_refetch && !(accessible_loaded && all_loaded);
-            let all_connectors_for_update =
-                if showing_interim_force_refetch && cached_all_connectors.is_some() {
-                    cached_all_connectors.as_deref()
-                } else {
-                    all_connectors.as_deref()
-                };
-            let accessible_connectors_for_update =
-                if showing_interim_force_refetch && !accessible_loaded {
-                    None
-                } else {
-                    accessible_connectors.as_deref()
-                };
             let merged = connectors::with_app_enabled_state(
-                merge_loaded_apps(all_connectors_for_update, accessible_connectors_for_update),
+                merge_loaded_apps(/*all*/ None, accessible_connectors.as_deref()),
                 &config,
             );
             if should_send_app_list_updated_notification(
@@ -306,7 +255,7 @@ impl AppsRequestProcessor {
                 last_notified_apps = Some(merged.clone());
             }
 
-            if accessible_loaded && all_loaded {
+            if accessible_loaded {
                 let response = paginate_apps(merged.as_slice(), start, limit)?;
                 return Ok((response, codex_apps_ready));
             }
@@ -341,24 +290,11 @@ impl AppsRequestProcessor {
 
     async fn workspace_codex_plugins_enabled(
         &self,
-        config: &Config,
-        auth: Option<&CodexAuth>,
+        _config: &Config,
+        _auth: Option<&CodexAuth>,
     ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace TokenCode plugins setting; allowing TokenCode plugins: {err:#}"
-                );
-                true
-            }
-        }
+        // API key 鉴权模式下无云端工作区设置，TokenCode plugins 默认启用。
+        true
     }
 }
 
@@ -366,6 +302,8 @@ const APP_LIST_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
 
 enum AppListLoadResult {
     Accessible(Result<AccessibleConnectorsStatus, String>),
+    // 云目录分支已移除（API key 鉴权模式下无云目录），保留变体以兼容 channel 语义。
+    #[allow(dead_code)]
     Directory(Result<Vec<AppInfo>, String>),
 }
 
@@ -376,7 +314,7 @@ fn merge_loaded_apps(
     let all_connectors_loaded = all_connectors.is_some();
     let all = all_connectors.map_or_else(Vec::new, <[AppInfo]>::to_vec);
     let accessible = accessible_connectors.map_or_else(Vec::new, <[AppInfo]>::to_vec);
-    connectors::merge_connectors_with_accessible(all, accessible, all_connectors_loaded)
+    crate::connectors_helpers::merge_connectors_with_accessible(all, accessible, all_connectors_loaded)
 }
 
 fn should_send_app_list_updated_notification(

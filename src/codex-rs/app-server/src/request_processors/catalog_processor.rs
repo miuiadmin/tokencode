@@ -10,7 +10,6 @@ pub(crate) struct CatalogRequestProcessor {
     pub(super) thread_manager: Arc<ThreadManager>,
     pub(super) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
-    pub(super) workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
@@ -104,7 +103,6 @@ impl CatalogRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
     ) -> Self {
         Self {
             outgoing,
@@ -113,7 +111,6 @@ impl CatalogRequestProcessor {
             thread_manager,
             config,
             config_manager,
-            workspace_settings_cache,
         }
     }
 
@@ -225,24 +222,11 @@ impl CatalogRequestProcessor {
 
     async fn workspace_codex_plugins_enabled(
         &self,
-        config: &Config,
-        auth: Option<&CodexAuth>,
+        _config: &Config,
+        _auth: Option<&CodexAuth>,
     ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace TokenCode plugins setting; allowing TokenCode plugins: {err:#}"
-                );
-                true
-            }
-        }
+        // API key 鉴权模式下无云端工作区设置，TokenCode plugins 默认启用。
+        true
     }
 
     async fn list_models(

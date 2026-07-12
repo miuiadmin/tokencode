@@ -1,5 +1,3 @@
-pub(crate) const MEMORY_STARTUP: &str = "codex.memory.startup";
-
 pub(crate) const MEMORY_PHASE_ONE_JOBS: &str = "codex.memory.phase1";
 pub(crate) const MEMORY_PHASE_ONE_E2E_MS: &str = "codex.memory.phase1.e2e_ms";
 pub(crate) const MEMORY_PHASE_ONE_OUTPUT: &str = "codex.memory.phase1.output";
