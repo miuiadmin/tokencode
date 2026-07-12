@@ -2258,33 +2258,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-backend-client"
-version = "0.143.0-alpha.36"
-dependencies = [
- "anyhow",
- "codex-api",
- "codex-backend-openapi-models",
- "codex-client",
- "codex-default-client",
- "codex-login",
- "codex-model-provider",
- "codex-protocol",
- "pretty_assertions",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "codex-backend-openapi-models"
-version = "0.143.0-alpha.36"
-dependencies = [
- "serde",
- "serde_json",
- "serde_with",
-]
-
-[[package]]
 name = "codex-bwrap"
 version = "0.143.0-alpha.36"
 dependencies = [
@@ -2400,86 +2373,6 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys 0.52.0",
  "zstd 0.13.3",
-]
-
-[[package]]
-name = "codex-cloud-config"
-version = "0.143.0-alpha.36"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "codex-agent-identity",
- "codex-backend-client",
- "codex-config",
- "codex-core",
- "codex-default-client",
- "codex-login",
- "codex-otel",
- "codex-protocol",
- "hmac 0.12.1",
- "pretty_assertions",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "codex-cloud-tasks"
-version = "0.143.0-alpha.36"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "codex-client",
- "codex-cloud-tasks-client",
- "codex-cloud-tasks-mock-client",
- "codex-core",
- "codex-default-client",
- "codex-git-utils",
- "codex-login",
- "codex-model-provider",
- "codex-tui",
- "codex-utils-cli",
- "crossterm",
- "owo-colors",
- "pretty_assertions",
- "ratatui",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "supports-color 3.0.2",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
- "unicode-width 0.2.1",
-]
-
-[[package]]
-name = "codex-cloud-tasks-client"
-version = "0.143.0-alpha.36"
-dependencies = [
- "anyhow",
- "chrono",
- "codex-api",
- "codex-backend-client",
- "codex-git-utils",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "codex-cloud-tasks-mock-client"
-version = "0.143.0-alpha.36"
-dependencies = [
- "chrono",
- "codex-cloud-tasks-client",
- "diffy",
 ]
 
 [[package]]

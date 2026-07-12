@@ -4,7 +4,6 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
-    "backend-client",
     "bwrap",
     "ansi-escape",
     "async-utils",
@@ -19,16 +18,11 @@ members = [
     "feedback",
     "features",
     "install-context",
-    "codex-backend-openapi-models",
     "code-mode",
     "code-mode-host",
     "code-mode-protocol",
     "codex-home",
-    "cloud-config",
     "default-client",
-    "cloud-tasks",
-    "cloud-tasks-client",
-    "cloud-tasks-mock-client",
     "cli",
     "collaboration-mode-templates",
     "connectors",
@@ -155,15 +149,10 @@ codex-app-server-test-client = { path = "app-server-test-client" }
 codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
-codex-backend-client = { path = "backend-client" }
-codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
 codex-default-client = { path = "default-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
-codex-cloud-config = { path = "cloud-config" }
-codex-cloud-tasks-client = { path = "cloud-tasks-client" }
-codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-home = { path = "codex-home" }
