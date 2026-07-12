@@ -32,6 +32,21 @@ pub fn resolve_provider_for_model(
     }
 }
 
+/// 与 [`resolve_provider_for_model`] 同款选择逻辑，但只返回 provider id（字符串）。
+///
+/// 供需要同时拿到 provider 信息与 id 的调用方使用：`ModelProviderInfo` 不携带自身 id，
+/// 故 id 须单独解析。选择顺序与 [`resolve_provider_for_model`] 完全一致，避免两者漂移。
+pub fn resolve_provider_id_for_model(
+    model_info: &ModelInfo,
+    model_providers: &HashMap<String, ModelProviderInfo>,
+    default_provider_id: &str,
+) -> String {
+    match model_info.provider_id.as_deref() {
+        Some(id) if model_providers.contains_key(id) => id.to_string(),
+        _ => default_provider_id.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +138,31 @@ mod tests {
         let info = model_with_provider("x", Some("no-such-provider"));
         let resolved = resolve_provider_for_model(&info, &providers, "openai");
         assert_eq!(resolved.wire_api, WireApi::Responses);
+    }
+
+    #[test]
+    fn id_helper_matches_provider_helper_selection() {
+        let providers = built_in_model_providers(None);
+
+        // 命中声明 provider：id 与 provider 一致（glm）。
+        let info = model_with_provider("glm-5.2", Some("glm"));
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "openai"),
+            "glm"
+        );
+
+        // 缺省 provider_id：回落默认 openai。
+        let info = model_with_provider("legacy", None);
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "openai"),
+            "openai"
+        );
+
+        // 未知 provider_id：同样回落默认。
+        let info = model_with_provider("x", Some("no-such-provider"));
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "openai"),
+            "openai"
+        );
     }
 }

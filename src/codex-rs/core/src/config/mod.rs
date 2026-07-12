@@ -82,7 +82,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
-use codex_models_manager::ModelsManagerConfig;
+use codex_models_manager::{ModelsManagerConfig, provider_id_for_model};
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -3407,8 +3407,13 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
+        // provider 优先级：显式 model_provider（CLI/config） > 按 model slug 推导
+        // （内置 models.json 中该模型声明的 provider_id） > 默认 openai。
+        // 最后一档让 `model = "glm-5.2"` 这类无显式 provider 的配置在加载期就绑定到
+        // 对应厂商，避免启动登录流程 / session_log / 重启持久化读到错的 provider。
         let model_provider_id = model_provider
             .or(cfg.model_provider)
+            .or_else(|| model.as_deref().or(cfg.model.as_deref()).and_then(provider_id_for_model))
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
             .get(&model_provider_id)

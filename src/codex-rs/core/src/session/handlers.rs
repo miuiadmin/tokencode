@@ -16,6 +16,7 @@ use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
 use crate::config::Config;
+use crate::model_provider_resolver::{resolve_provider_for_model, resolve_provider_id_for_model};
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
@@ -126,6 +127,43 @@ async fn thread_settings_update(
         collaboration_mode,
         personality,
     } = thread_settings;
+
+    // 切模型时按新 model 解析 provider，同步会话级 provider：修 `get_base_instructions`
+    // 每 turn 读 `session_configuration.provider.wire_api` 选协议模板的 staleness，以及
+    // `thread_config_snapshot` 读回的 provider staleness。`model` 在下方 with_updates 会被
+    // move，故在此用 ref 借用先行解析。未切模型（model=None）则不改 provider。
+    let (resolved_provider, resolved_provider_id) = if let Some(new_model) = model.as_ref() {
+        // 只复制 Arc<Config>（廉价）与当前会话 provider id（活值），不在 await 期间持有会话
+        // 状态锁——get_model_info 可能触发远端模型目录拉取，持锁 await 会阻塞所有 turn 处理。
+        // 回落用活值 model_provider_id（而非 original_config 的启动冻结值）：无 provider_id
+        // 的模型中途切换时继承当前会话 provider，而非跳回启动默认。
+        let (original_config, current_provider_id) = {
+            let state = sess.state.lock().await;
+            let config = state.session_configuration.original_config_do_not_use.clone();
+            let id = state.session_configuration.model_provider_id.clone();
+            (config, id)
+        };
+        let models_manager_config = original_config.to_models_manager_config();
+        let model_info = sess
+            .services
+            .models_manager
+            .get_model_info(new_model, &models_manager_config)
+            .await;
+        let provider = resolve_provider_for_model(
+            &model_info,
+            &original_config.model_providers,
+            &current_provider_id,
+        );
+        let provider_id = resolve_provider_id_for_model(
+            &model_info,
+            &original_config.model_providers,
+            &current_provider_id,
+        );
+        (Some(provider), Some(provider_id))
+    } else {
+        (None, None)
+    };
+
     let collaboration_mode = match collaboration_mode {
         Some(collaboration_mode) => collaboration_mode,
         None => {
@@ -152,6 +190,8 @@ async fn thread_settings_update(
         reasoning_summary: summary,
         service_tier,
         personality,
+        provider: resolved_provider,
+        model_provider_id: resolved_provider_id,
         ..Default::default()
     }
 }

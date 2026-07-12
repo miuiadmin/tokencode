@@ -638,6 +638,7 @@ impl TokenCode {
         );
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
+            model_provider_id: config.model_provider_id.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
             service_tier,

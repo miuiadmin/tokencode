@@ -3663,6 +3663,7 @@ async fn set_rate_limits_retains_previous_credits() {
     };
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -3770,6 +3771,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     };
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -4303,6 +4305,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 
     SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -4545,6 +4548,48 @@ async fn session_configuration_apply_permission_profile_preserves_existing_deny_
         updated.file_system_sandbox_policy(),
         expected_file_system_policy
     );
+}
+
+#[tokio::test]
+async fn session_configuration_apply_syncs_provider_and_id_from_model_switch() {
+    // PR3：切模型时同步会话级 provider 与 model_provider_id（修 base_instructions 协议模板
+    // 与 thread_config_snapshot 读回显示）。apply() 是同步落点，校验它正确消费
+    // SessionSettingsUpdate 的 provider / model_provider_id 两个字段，且不改动原对象。
+    let session_configuration = make_session_configuration_for_tests().await;
+    // 测试构造默认走 openai（Responses）。
+    assert_eq!(
+        session_configuration.provider.wire_api,
+        codex_model_provider_info::WireApi::Responses
+    );
+    assert_eq!(session_configuration.model_provider_id, "openai");
+
+    // 模拟 thread_settings_update 切到 claude-opus-4-8 后解析出的 provider。
+    let providers = codex_model_provider_info::built_in_model_providers(None);
+    let anthropic = providers
+        .get("anthropic")
+        .expect("内置 anthropic provider 应存在")
+        .clone();
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            provider: Some(anthropic.clone()),
+            model_provider_id: Some("anthropic".to_string()),
+            ..Default::default()
+        })
+        .expect("provider 同步应成功");
+
+    // 会话级 provider 已切到 Anthropic——get_base_instructions 据此选协议模板。
+    assert_eq!(
+        updated.provider.wire_api,
+        codex_model_provider_info::WireApi::Anthropic
+    );
+    assert_eq!(updated.model_provider_id, "anthropic");
+    // apply 返回新对象，原 SessionConfiguration 不被改动。
+    assert_eq!(
+        session_configuration.provider.wire_api,
+        codex_model_provider_info::WireApi::Responses
+    );
+    assert_eq!(session_configuration.model_provider_id, "openai");
 }
 
 #[tokio::test]
@@ -5174,6 +5219,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     };
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -5306,6 +5352,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -5555,6 +5602,7 @@ async fn make_session_with_config_and_rx(
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -5663,6 +5711,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
@@ -6630,6 +6679,109 @@ async fn user_turn_updates_approvals_reviewer() {
 }
 
 #[tokio::test]
+async fn thread_settings_model_switch_syncs_session_provider() {
+    // PR3：thread_settings_update 收到 model 切换时，按新 model 的 provider_id 解析并同步
+    // 会话级 provider 与 model_provider_id。端到端校验 handlers → get_model_info →
+    // resolver → apply → SessionConfiguration 链路（apply 单测覆盖落点，此处覆盖接入）。
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    // 默认 openai（Responses）。
+    {
+        let state = session.state.lock().await;
+        assert_eq!(
+            state.session_configuration.provider.wire_api,
+            codex_model_provider_info::WireApi::Responses
+        );
+        assert_eq!(state.session_configuration.model_provider_id, "openai");
+    }
+
+    handlers::user_input_or_turn(
+        &session,
+        "sub-1".to_string(),
+        Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "switch".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("claude-opus-4-8".to_string()),
+                ..Default::default()
+            },
+        },
+        /*client_user_message_id*/ None,
+    )
+    .await;
+
+    let state = session.state.lock().await;
+    // claude-opus-4-8 声明 provider_id=anthropic → 会话级 provider 切到 Anthropic。
+    assert_eq!(
+        state.session_configuration.provider.wire_api,
+        codex_model_provider_info::WireApi::Anthropic
+    );
+    assert_eq!(state.session_configuration.model_provider_id, "anthropic");
+}
+
+#[tokio::test]
+async fn thread_settings_legacy_model_inherits_current_session_provider() {
+    // PR3 限制 1 修复：无 provider_id 的模型中途切换时，resolver 回落用活值
+    // session_configuration.model_provider_id（当前会话 provider），而非 original_config 的
+    // 启动冻结值。场景：openai 启动 → 切 glm-5.2（live=glm）→ 切 gpt-5.5（已知但无
+    // provider_id）→ 应继承 glm（Chat），而非跳回启动 openai（Responses）。
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    // 默认 openai（Responses）。
+    {
+        let state = session.state.lock().await;
+        assert_eq!(state.session_configuration.model_provider_id, "openai");
+        assert_eq!(
+            state.session_configuration.provider.wire_api,
+            codex_model_provider_info::WireApi::Responses
+        );
+    }
+
+    // 先切到 glm-5.2（provider_id=glm）→ 活值变 glm。
+    handlers::update_thread_settings(
+        &session,
+        "sub-1".to_string(),
+        ThreadSettingsOverrides {
+            model: Some("glm-5.2".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    {
+        let state = session.state.lock().await;
+        assert_eq!(state.session_configuration.model_provider_id, "glm");
+        assert_eq!(
+            state.session_configuration.provider.wire_api,
+            codex_model_provider_info::WireApi::Chat
+        );
+    }
+
+    // 再切到 gpt-5.5（已知模型但无 provider_id）→ 应回落到活值 glm，而非启动冻结 openai。
+    handlers::update_thread_settings(
+        &session,
+        "sub-2".to_string(),
+        ThreadSettingsOverrides {
+            model: Some("gpt-5.5".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let state = session.state.lock().await;
+    assert_eq!(
+        state.session_configuration.model_provider_id,
+        "glm",
+        "无 provider_id 的模型应继承当前会话 provider(glm)，而非跳回启动 openai"
+    );
+    assert_eq!(
+        state.session_configuration.provider.wire_api,
+        codex_model_provider_info::WireApi::Chat
+    );
+}
+
+#[tokio::test]
 async fn turn_environments_set_primary_environment() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
     let selected_cwd =
@@ -7433,6 +7585,7 @@ where
     let default_environments = vec![local(config.cwd.clone())];
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
+        model_provider_id: config.model_provider_id.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),

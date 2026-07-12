@@ -53,6 +53,13 @@ pub(crate) struct SessionConfiguration {
     /// Provider identifier ("openai", "openrouter", ...).
     pub(super) provider: ModelProviderInfo,
 
+    /// `provider` 的 id（`ModelProviderInfo` 本身不携带 id，故单独存）。
+    ///
+    /// 跟随当前 model 同步：config 加载时按 model slug 推导，切模型时由
+    /// `SessionSettingsUpdate` 更新。`thread_config_snapshot` 读此活值，使
+    /// app-server / TUI 读回反映当前 model 的 provider，而非启动时冻结的值。
+    pub(super) model_provider_id: String,
+
     pub(super) collaboration_mode: CollaborationMode,
     pub(super) model_reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(super) service_tier: Option<String>,
@@ -180,7 +187,7 @@ impl SessionConfiguration {
     pub(super) fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
-            model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
+            model_provider_id: self.model_provider_id.clone(),
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
@@ -231,6 +238,12 @@ impl SessionConfiguration {
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
+        }
+        if let Some(provider) = updates.provider.clone() {
+            next_configuration.provider = provider;
+        }
+        if let Some(model_provider_id) = updates.model_provider_id.clone() {
+            next_configuration.model_provider_id = model_provider_id;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
@@ -432,6 +445,11 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) personality: Option<Personality>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) app_server_client_version: Option<String>,
+    /// 切模型时按新 model 解析出的 provider（含 wire_api 等），同步会话级 provider，
+    /// 使 `get_base_instructions` 等读 `session_configuration.provider` 的路径用对协议。
+    pub(crate) provider: Option<ModelProviderInfo>,
+    /// 与 `provider` 配套的 provider id（`ModelProviderInfo` 不携带 id，单独传）。
+    pub(crate) model_provider_id: Option<String>,
 }
 
 pub(crate) struct AppServerClientMetadata {
