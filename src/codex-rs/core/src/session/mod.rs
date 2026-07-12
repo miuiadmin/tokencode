@@ -1262,9 +1262,17 @@ impl Session {
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
         let state = self.state.lock().await;
-        // 模型未声明 base_instructions 时（如跨厂商直连的新模型），按 wire 协议回落到
-        // 通用 coding-agent 模板，保证无内置指令的模型也有一致的角色与工作约定。
-        let text = if state.session_configuration.base_instructions.is_empty() {
+        // 仅跨厂商协议（Chat / Anthropic）的新模型在未声明 base_instructions 时，回落到
+        // 通用 coding-agent 模板。Responses（OpenAI 系）保留「空即不用」契约：用户自定义 /
+        // 远程 OpenAI 兼容模型若未声明 base_instructions，意为「不要系统提示词」，不应被强注
+        // 模板——否则 responses_lite 等路径会把空文本当成 developer 消息注入（行为变更）。
+        let use_fallback = state.session_configuration.base_instructions.is_empty()
+            && matches!(
+                state.session_configuration.provider.wire_api,
+                codex_model_provider_info::WireApi::Chat
+                    | codex_model_provider_info::WireApi::Anthropic,
+            );
+        let text = if use_fallback {
             crate::model_instructions::base_instructions_for(
                 state.session_configuration.provider.wire_api,
                 state.session_configuration.collaboration_mode.model(),

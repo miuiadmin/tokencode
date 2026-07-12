@@ -1264,6 +1264,50 @@ async fn get_base_instructions_no_user_content() {
 }
 
 #[tokio::test]
+async fn get_base_instructions_empty_only_fills_template_for_cross_vendor_wire_api() {
+    // 守卫 base_instructions 的「空即不用」契约：Responses（OpenAI 系）下，用户自定义 /
+    // 远程兼容模型若未声明 base_instructions，意为「不要系统提示词」，不得强注通用 coding-agent
+    // 模板（否则 responses_lite 等路径会把空文本当 developer 消息注入，造成行为变更）；仅跨厂商
+    // 协议（Chat / Anthropic）的新模型在为空时回落通用模板。该行为由 get_base_instructions 内的
+    // wire_api 门控保证——本测试锁定门控两端。
+    let (session, _turn_context) = make_session_and_context().await;
+
+    // 默认 provider 为 Responses：置空 base_instructions，模拟「未声明系统提示词」的模型。
+    {
+        let mut state = session.state.lock().await;
+        assert_eq!(
+            state.session_configuration.provider.wire_api,
+            codex_model_provider_info::WireApi::Responses
+        );
+        state.session_configuration.base_instructions = String::new();
+    }
+    // Responses + 空 base_instructions：必须保持空（不强注模板）。
+    assert!(
+        session.get_base_instructions().await.text.is_empty(),
+        "Responses 协议下空 base_instructions 应保持空，不得强注模板"
+    );
+
+    // 切到 Anthropic 协议（跨厂商），base_instructions 仍为空。
+    let anthropic = codex_model_provider_info::built_in_model_providers(None)
+        .get("anthropic")
+        .expect("内置 anthropic provider 应存在")
+        .clone();
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration.provider = anthropic;
+        assert_eq!(
+            state.session_configuration.provider.wire_api,
+            codex_model_provider_info::WireApi::Anthropic
+        );
+    }
+    // Anthropic + 空 base_instructions：回落通用模板，不得为空。
+    assert!(
+        !session.get_base_instructions().await.text.is_empty(),
+        "Anthropic 协议下空 base_instructions 应回落通用模板"
+    );
+}
+
+#[tokio::test]
 async fn reload_user_config_layer_updates_effective_apps_config() {
     let (session, _turn_context) = make_session_and_context().await;
     let codex_home = session.codex_home().await;
