@@ -176,6 +176,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
 
     let output = client
         .compact_conversation_history(
+            &client.state.provider,
             &prompt,
             &test_model_info(),
             /*turn_state*/ None,

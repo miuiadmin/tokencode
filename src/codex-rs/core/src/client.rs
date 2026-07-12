@@ -307,6 +307,13 @@ struct WebsocketSession {
     last_response_rx: Option<oneshot::Receiver<LastResponse>>,
     last_response_from_untraced_warmup: bool,
     connection_reused: StdMutex<bool>,
+    /// 缓存连接所属 provider 的指纹（name + base_url + wire_api）。
+    ///
+    /// Responses 的 WebSocket 连接按 provider 绑定端点与鉴权，跨 provider 不能复用。
+    /// 连接建立时盖上当时 provider 的指纹，后续 `websocket_connection` / `preconnect_websocket`
+    /// 据此判定：provider 切换后旧连接一律视为失效并重建，避免把 A provider 的连接拿去
+    /// 发 B provider 的请求（切模型后 turn 级 provider 与缓存连接 provider 不一致的脏复用）。
+    connection_provider_key: Option<String>,
 }
 
 // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
@@ -536,6 +543,9 @@ impl ModelClient {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn compact_conversation_history(
         &self,
+        // turn 级 provider：压缩请求必须发往当前 turn 的 provider（随模型切换），
+        // 而非会话默认 provider，否则切模型后压缩会打到错误的端点/模型。
+        provider: &SharedModelProvider,
         prompt: &Prompt,
         model_info: &ModelInfo,
         turn_state: Option<Arc<OnceLock<String>>>,
@@ -547,7 +557,7 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
-        let client_setup = self.current_client_setup().await?;
+        let client_setup = self.current_client_setup_with(provider).await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
@@ -562,7 +572,7 @@ impl ModelClient {
         );
         let request = self.build_responses_request(
             &client_setup.api_provider,
-            self.state.provider.info(),
+            provider.info(),
             prompt,
             model_info,
             settings.effort,
@@ -629,7 +639,7 @@ impl ModelClient {
                 turn_state.as_deref(),
             )
             .await
-            .map_err(|error| self.state.provider.map_api_error(error));
+            .map_err(|error| provider.map_api_error(error));
         trace_attempt.record_result(result.as_deref());
         result
     }
@@ -1132,11 +1142,23 @@ impl ModelClientSession {
 
     fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
+        self.websocket_session.connection_provider_key = None;
         self.websocket_session.last_request = None;
         self.websocket_session.last_response_rx = None;
         self.websocket_session.last_response_from_untraced_warmup = false;
         self.websocket_session
             .set_connection_reused(/*connection_reused*/ false);
+    }
+
+    /// 当前 turn 级 provider 的连接指纹（name + base_url + wire_api）。
+    fn websocket_provider_key(&self) -> String {
+        let info = self.provider.info();
+        format!(
+            "{}/{}/{:?}",
+            info.name,
+            info.base_url.as_deref().unwrap_or(""),
+            info.wire_api,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1278,7 +1300,17 @@ impl ModelClientSession {
             return Ok(());
         }
         if self.websocket_session.connection.is_some() {
-            return Ok(());
+            let current_key = self.websocket_provider_key();
+            if self
+                .websocket_session
+                .connection_provider_key
+                .as_deref()
+                == Some(current_key.as_str())
+            {
+                return Ok(());
+            }
+            // provider 已切换：旧连接属于别的 provider，弃用并重建以预热新 provider 的连接。
+            self.reset_websocket_session();
         }
 
         let client_setup = self.current_client_setup().await.map_err(|err| {
@@ -1304,6 +1336,7 @@ impl ModelClientSession {
             )
             .await?;
         self.websocket_session.connection = Some(connection);
+        self.websocket_session.connection_provider_key = Some(self.websocket_provider_key());
         self.websocket_session
             .set_connection_reused(/*connection_reused*/ false);
         Ok(())
@@ -1333,8 +1366,19 @@ impl ModelClientSession {
             auth_context,
             request_route_telemetry,
         } = params;
+        let current_provider_key = self.websocket_provider_key();
         let needs_new = match self.websocket_session.connection.as_ref() {
-            Some(conn) => conn.is_closed().await,
+            Some(conn) => {
+                conn.is_closed().await
+                    || self
+                        .websocket_session
+                        .connection_provider_key
+                        .as_deref()
+                        // 旧连接的 provider 与当前 turn 不一致 → 不能复用（端点/鉴权不同）；
+                        // 旧连接缺指纹（历史遗留）保守视为需重建。
+                        .map(|key| key != current_provider_key.as_str())
+                        .unwrap_or(true)
+            }
             None => true,
         };
 
@@ -1363,6 +1407,7 @@ impl ModelClientSession {
                 }
             };
             self.websocket_session.connection = Some(new_conn);
+            self.websocket_session.connection_provider_key = Some(current_provider_key);
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ false);
         } else {
