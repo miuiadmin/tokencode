@@ -386,6 +386,18 @@ fn test_built_in_model_providers_include_cross_vendor_providers() {
     assert_eq!(providers[MINIMAX_PROVIDER_ID].wire_api, WireApi::Chat);
     assert_eq!(providers[MOONSHOT_PROVIDER_ID].wire_api, WireApi::Chat);
 
+    // env_key 对齐各厂商官方约定：GLM 用智谱官方 ZHIPUAI_API_KEY（非内部命名 GLM_API_KEY），
+    // Anthropic 用其官方 ANTHROPIC_API_KEY。
+    assert_eq!(
+        providers[GLM_PROVIDER_ID].env_key.as_deref(),
+        Some("ZHIPUAI_API_KEY"),
+        "GLM env_key 应对齐智谱官方约定 ZHIPUAI_API_KEY"
+    );
+    assert_eq!(
+        providers[ANTHROPIC_PROVIDER_ID].env_key.as_deref(),
+        Some("ANTHROPIC_API_KEY")
+    );
+
     // Anthropic 内置 provider 不硬编码 max_output_tokens，留 None 由 adapter 常量兜底。
     assert_eq!(providers[ANTHROPIC_PROVIDER_ID].max_output_tokens, None);
 }

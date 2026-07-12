@@ -172,6 +172,23 @@ fn sample_unified_request() -> UnifiedRequest {
     }
 }
 
+/// 在 Anthropic wire 请求体里找首个 `tool_result` content 块（跨 messages[].content[] 扁平）。
+/// 两个 is_error 映射测试共用此提取，避免逐字重复 wire 形态遍历逻辑（wire 形态若变更只改一处）。
+fn find_tool_result_block(json: &serde_json::Value) -> serde_json::Value {
+    json.get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages")
+        .iter()
+        .flat_map(|m| {
+            m.get("content")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
+        .expect("应有 tool_result 块")
+}
+
 fn sample_unified_options() -> UnifiedRequestOptions {
     UnifiedRequestOptions {
         session_id: None,
@@ -711,20 +728,7 @@ fn request_translation_tool_choice_parallel_and_is_error_shapes() {
     });
     let api: AnthropicApiRequest = req.into();
     let json = serde_json::to_value(&api).expect("可序列化");
-    let messages = json
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .expect("应有 messages");
-    let tool_result = messages
-        .iter()
-        .flat_map(|m| {
-            m.get("content")
-                .and_then(|c| c.as_array())
-                .cloned()
-                .unwrap_or_default()
-        })
-        .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
-        .expect("应有 tool_result 块");
+    let tool_result = find_tool_result_block(&json);
     assert_eq!(
         tool_result.get("is_error").and_then(|v| v.as_bool()),
         Some(true),
@@ -732,7 +736,7 @@ fn request_translation_tool_choice_parallel_and_is_error_shapes() {
     );
 }
 
-/// 回归 is_error 映射的三个状态（sweep：原测试只覆盖 success=Some(false) 一个方向，缺成功与
+/// 回归 is_error 映射的三个状态（扫尾补缺：原测试只覆盖 success=Some(false) 一个方向，缺成功与
 /// 未表态两个分支）：
 /// - `success=Some(false)`（失败）→ `is_error=Some(true)`；
 /// - `success=Some(true)`（成功）→ `is_error=Some(false)`（取反，非同义透传）；
@@ -753,24 +757,10 @@ fn request_translation_tool_result_is_error_covers_all_success_states() {
         let api: AnthropicApiRequest = req.into();
         serde_json::to_value(&api).expect("可序列化")
     }
-    let tool_result = |json: &serde_json::Value| {
-        json.get("messages")
-            .and_then(|m| m.as_array())
-            .expect("应有 messages")
-            .iter()
-            .flat_map(|m| {
-                m.get("content")
-                    .and_then(|c| c.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
-            .expect("应有 tool_result 块")
-    };
 
     // 失败 → is_error=true。
     assert_eq!(
-        tool_result(&translate(Some(false)))
+        find_tool_result_block(&translate(Some(false)))
             .get("is_error")
             .and_then(|v| v.as_bool()),
         Some(true),
@@ -778,7 +768,7 @@ fn request_translation_tool_result_is_error_covers_all_success_states() {
     );
     // 成功 → is_error=false（取反，验证不是同义透传）。
     assert_eq!(
-        tool_result(&translate(Some(true)))
+        find_tool_result_block(&translate(Some(true)))
             .get("is_error")
             .and_then(|v| v.as_bool()),
         Some(false),
@@ -786,7 +776,7 @@ fn request_translation_tool_result_is_error_covers_all_success_states() {
     );
     // 未表态 → is_error 字段省略。
     assert!(
-        tool_result(&translate(None))
+        find_tool_result_block(&translate(None))
             .get("is_error")
             .is_none(),
         "success=None 时 is_error 不应序列化"

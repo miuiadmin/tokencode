@@ -511,10 +511,12 @@ pub fn built_in_model_providers(
         (ANTHROPIC_PROVIDER_ID, create_anthropic_provider(None)),
         (
             GLM_PROVIDER_ID,
+            // env_key 用智谱官方约定的 ZHIPUAI_API_KEY（其 SDK/文档均用此名），而非内部
+            // provider 命名 GLM 对应的 GLM_API_KEY——用户按官方文档设变量即可直接认证。
             create_openai_chat_compatible_provider(
                 GLM_PROVIDER_NAME,
                 GLM_DEFAULT_BASE_URL,
-                "GLM_API_KEY",
+                "ZHIPUAI_API_KEY",
             ),
         ),
         (
@@ -600,23 +602,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        auth: None,
-        aws: None,
         wire_api,
-        adapter_type: None,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        websocket_connect_timeout_ms: None,
-        requires_openai_auth: false,
-        supports_websockets: false,
-        max_output_tokens: None,
+        ..Default::default()
     }
 }
 
@@ -631,22 +618,8 @@ pub fn create_anthropic_provider(base_url: Option<String>) -> ModelProviderInfo 
         name: ANTHROPIC_PROVIDER_NAME.into(),
         base_url: Some(base_url.unwrap_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_string())),
         env_key: Some("ANTHROPIC_API_KEY".to_string()),
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        auth: None,
-        aws: None,
         wire_api: WireApi::Anthropic,
-        adapter_type: None,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        websocket_connect_timeout_ms: None,
-        requires_openai_auth: false,
-        supports_websockets: false,
-        max_output_tokens: None,
+        ..Default::default()
     }
 }
 
@@ -664,22 +637,8 @@ pub fn create_openai_chat_compatible_provider(
         name: name.into(),
         base_url: Some(base_url.into()),
         env_key: Some(env_key.to_string()),
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        auth: None,
-        aws: None,
         wire_api: WireApi::Chat,
-        adapter_type: None,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        websocket_connect_timeout_ms: None,
-        requires_openai_auth: false,
-        supports_websockets: false,
-        max_output_tokens: None,
+        ..Default::default()
     }
 }
 
