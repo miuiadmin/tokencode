@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::{OPENAI_PROVIDER_ID, ModelProviderInfo};
 use codex_protocol::openai_models::ModelInfo;
 
 /// 依据模型的 `provider_id` 解析它应使用的 provider。
@@ -14,9 +14,11 @@ use codex_protocol::openai_models::ModelInfo;
 /// 解析顺序：
 /// 1. `model_info.provider_id` 命中 `model_providers` 中已配置的 provider → 返回它；
 /// 2. 否则回落到会话默认 provider（`default_provider_id`，即今天的 `config.model_provider`）；
-/// 3. 默认 provider 也缺失 → 返回 `ModelProviderInfo::default()`（调用方应保证不走到这里）。
+/// 3. 默认 provider 也缺失 → 回落到内置 `openai` provider；仅当连 `openai` 也被从
+///    `model_providers` 移除的极端情形才回落 `ModelProviderInfo::default()`（空壳）。
 ///
-/// 第 2 步保证老配置（模型无 `provider_id` 概念）行为与现状逐字节一致。
+/// 第 2 步保证老配置（模型无 `provider_id` 概念）行为与现状逐字节一致；第 3 步避免
+/// 在默认 provider 配错时静默返回空壳（空 base_url 会让请求打到无效端点）。
 #[allow(dead_code)] // PR1 仅落地数据层，PR2 的 with_model/make_turn_context 会接入。
 pub fn resolve_provider_for_model(
     model_info: &ModelInfo,
@@ -27,6 +29,7 @@ pub fn resolve_provider_for_model(
         Some(id) if model_providers.contains_key(id) => model_providers[id].clone(),
         _ => model_providers
             .get(default_provider_id)
+            .or_else(|| model_providers.get(OPENAI_PROVIDER_ID))
             .cloned()
             .unwrap_or_default(),
     }
@@ -43,7 +46,14 @@ pub fn resolve_provider_id_for_model(
 ) -> String {
     match model_info.provider_id.as_deref() {
         Some(id) if model_providers.contains_key(id) => id.to_string(),
-        _ => default_provider_id.to_string(),
+        // 与 resolve_provider_for_model 保持一致：默认缺失时回落 openai，避免返回无效 id。
+        _ => {
+            if model_providers.contains_key(default_provider_id) {
+                default_provider_id.to_string()
+            } else {
+                OPENAI_PROVIDER_ID.to_string()
+            }
+        }
     }
 }
 
@@ -138,6 +148,27 @@ mod tests {
         let info = model_with_provider("x", Some("no-such-provider"));
         let resolved = resolve_provider_for_model(&info, &providers, "openai");
         assert_eq!(resolved.wire_api, WireApi::Responses);
+    }
+
+    #[test]
+    fn falls_back_to_openai_when_default_provider_missing() {
+        // default_provider_id 指向不存在的 provider：应回落到内置 openai，而非空壳
+        // （空壳 name 为空、base_url 为空，请求会打到无效端点）。
+        let providers = built_in_model_providers(None);
+        let info = model_with_provider("legacy-model", None);
+
+        let resolved = resolve_provider_for_model(&info, &providers, "no-such-default");
+        assert_eq!(resolved.name, "OpenAI", "应回落到内置 openai provider，而非空壳");
+        assert!(
+            !resolved.name.is_empty(),
+            "回落结果不得是空壳 provider（name 为空）"
+        );
+
+        // id 变体选择顺序与 provider 变体一致：默认缺失时回落 openai。
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "no-such-default"),
+            "openai"
+        );
     }
 
     #[test]

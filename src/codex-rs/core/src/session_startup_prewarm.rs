@@ -303,7 +303,15 @@ async fn schedule_startup_prewarm_inner(
             window_id,
             CodexResponsesRequestKind::Prewarm,
         );
-    let mut client_session = session.services.model_client.new_session();
+    // 用启动 turn 的 provider 建会话，而非 new_session() 默认的 state.provider（后者冻结在
+    // ModelClient 构造时的初始默认，不随模型切换）。prewarm_websocket 按 client_session 的
+    // provider 判定 WS 能力与建连——显式注入 turn 级 provider，确保预热与首 turn 用同一
+    // provider（与 WS 连接按 provider 指纹隔离的约定一致）。
+    let mut client_session = session
+        .services
+        .model_client
+        .new_session()
+        .with_provider(startup_turn_context.provider.clone());
     let websocket_warmup_started_at = Instant::now();
     client_session
         .prewarm_websocket(
