@@ -38,15 +38,16 @@ use std::sync::Arc;
 use tracing::debug;
 use tracing::warn;
 
-/// Anthropic 必填 `max_tokens` 的保守默认。
+/// Anthropic 必填 `max_tokens` 的默认值（`Provider.max_output_tokens` 为 None 时回落到此）。
 ///
-/// 取 4096：Claude 3 整代（Opus / Sonnet / Haiku）的输出上限就是 4096，这也是跨所有已发布
-/// Claude 模型都不会被服务端拒绝的值——`max_tokens` 超过模型上限时 Anthropic 直接返回 400，
-/// 故 8192 这类更高固定值会让 Claude 3 整代整批 400。代价是 Claude 3.5+ / 4.x 等支持 32k–64k
-/// 输出的现代模型被截断在 4096。本仓库 Responses / Chat 路径均不传 `max_tokens`；Anthropic
-/// 路径在 `Provider.max_output_tokens` 为 None 时回落到此常量，Some 时改用配置值覆盖（见
-/// `AnthropicAdapter::stream`），从而对现代模型可经配置上调而不影响 Claude 3 整代的默认安全。
-pub const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4_096;
+/// 取 16384：本仓库内置的 Anthropic 模型为 claude-opus-4-8 / claude-sonnet-5，二者输出上限
+/// 均 ≥ 16384，该值不会触发 Anthropic 的 400（`max_tokens` 超过模型上限时服务端直接 400）。
+/// 旧的 4096 是为兼容 Claude 3 整代（上限 4096）而取的最小公分母，但本仓库已不内置 Claude 3
+/// 模型，该保守值只会把现代模型的长输出截断在 4096。若经自定义 config 接入 Claude 3 等低上限
+/// 模型，应在 [model_providers] 里显式下调 `max_output_tokens`。Responses / Chat 路径不传
+/// `max_tokens`；Anthropic 路径在 `Provider.max_output_tokens` 为 Some 时改用配置值覆盖（见
+/// `AnthropicAdapter::stream`）。
+pub const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 16_384;
 
 // ===========================================================================
 // UnifiedRequest → AnthropicApiRequest 翻译（编译期对 ResponseItem 穷尽 match）
@@ -389,7 +390,7 @@ impl<T: HttpTransport> LanguageModel for AnthropicAdapter<T> {
             // 中立请求 / 选项 → Anthropic wire 请求 / 选项（翻译表 + 既有 From）。
             let mut api_request: AnthropicApiRequest = request.into();
             // provider 显式配置的 max_output_tokens 覆盖 From 写入的 ANTHROPIC_DEFAULT_MAX_TOKENS
-            // 缺省；None 时保持 4096 保守默认（兼容 Claude 3 整代）。
+            // 缺省；None 时保持 16384（内置 Claude 模型均支持，见常量注释）。
             if let Some(max) = self.max_output_tokens {
                 api_request.max_tokens = max;
             }

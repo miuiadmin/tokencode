@@ -148,11 +148,10 @@ pub struct ModelProviderInfo {
     pub adapter_type: Option<AdapterType>,
     /// 模型单次回复的最大输出 token 上限（覆盖各协议的缺省值）。
     ///
-    /// 协议消费差异：Anthropic Messages 必填 `max_tokens`，缺省回落 4096（兼容 Claude 3
-    /// 整代 4096 的输出上限）；OpenAI Chat Completions 可选，缺省不发（由服务端决定）；
-    /// OpenAI Responses 不消费。现代模型（Claude 3.5+ / 4.x 等）输出上限更高，按需上调
-    /// 以免长输出被静默截断（截断表现为 `stop_reason="max_tokens"`，非错误）。取值应为
-    /// 正整数；合法性最终由服务端校验，配置层不做下限断言。
+    /// 协议消费差异：Anthropic Messages 必填 `max_tokens`，缺省回落 16384（内置
+    /// claude-opus-4-8 / claude-sonnet-5 均支持；接入低上限模型如 Claude 3 须显式下调）；
+    /// OpenAI Chat Completions 可选，缺省不发（由服务端决定）；OpenAI Responses 不消费。
+    /// 取值应为正整数；合法性最终由服务端校验，配置层不做下限断言。
     pub max_output_tokens: Option<u32>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
@@ -623,8 +622,9 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
 
 /// 构造 Anthropic 原生 provider（Messages API）。
 ///
-/// `max_output_tokens` 必填：Anthropic Messages 的 `max_tokens` 是请求必填字段，
-/// 缺省会触发 422；此处给一个保守上限，模型/配置仍可覆盖。
+/// `max_output_tokens` 留 None：Anthropic Messages 的 `max_tokens` 虽是请求必填字段，但具体
+/// 上限由 adapter 常量 `ANTHROPIC_DEFAULT_MAX_TOKENS` 兜底（内置 Claude 模型均支持），内置
+/// provider 不在此硬编码覆盖；用户可经 [model_providers] 的 `max_output_tokens` 上调/下调。
 /// 认证由 `Anthropic` adapter 内层把 Bearer 改写为 `x-api-key` + `anthropic-version`。
 pub fn create_anthropic_provider(base_url: Option<String>) -> ModelProviderInfo {
     ModelProviderInfo {
@@ -646,7 +646,7 @@ pub fn create_anthropic_provider(base_url: Option<String>) -> ModelProviderInfo 
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
-        max_output_tokens: Some(4096),
+        max_output_tokens: None,
     }
 }
 

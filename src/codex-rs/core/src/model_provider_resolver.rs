@@ -129,8 +129,8 @@ mod tests {
         let info = model_with_provider("claude-opus-4-8", Some("anthropic"));
         let resolved = resolve_provider_for_model(&info, &providers, "openai");
         assert_eq!(resolved.wire_api, WireApi::Anthropic);
-        // Anthropic Messages 的 max_tokens 必填，构造时应给了兜底上限。
-        assert_eq!(resolved.max_output_tokens, Some(4096));
+        // Anthropic 内置 provider 不硬编码 max_output_tokens，留 None 由 adapter 常量兜底。
+        assert_eq!(resolved.max_output_tokens, None);
     }
 
     #[test]

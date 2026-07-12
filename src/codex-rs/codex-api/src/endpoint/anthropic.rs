@@ -125,7 +125,7 @@ impl AuthProvider for AnthropicAuth {
     }
 }
 
-/// Anthropic Messages client（`POST {base_url}/messages`，流式）。
+/// Anthropic Messages client（`POST {base_url}/v1/messages`，流式）。
 pub struct AnthropicClient<T: HttpTransport> {
     session: EndpointSession<T>,
     sse_telemetry: Option<Arc<dyn SseTelemetry>>,

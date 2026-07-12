@@ -451,11 +451,11 @@ fn request_translation_shapes_anthropic_wire() {
     let api_request: AnthropicApiRequest = request.into();
     let json = serde_json::to_value(&api_request).expect("AnthropicApiRequest 应可序列化");
 
-    // 必填 max_tokens 走常量默认（4096：Claude 3 整代上限，跨所有 Claude 模型不被 400 的安全值）。
+    // 必填 max_tokens 走常量默认（16384：内置 Claude 模型均支持）。
     assert_eq!(
         json.get("max_tokens").and_then(|v| v.as_u64()),
-        Some(4096),
-        "max_tokens 应为常量默认 4096"
+        Some(16384),
+        "max_tokens 应为常量默认 16384"
     );
     // stream 透传。
     assert_eq!(json.get("stream").and_then(|v| v.as_bool()), Some(true));
@@ -832,9 +832,9 @@ async fn stream_rejects_empty_messages() {
 #[tokio::test]
 async fn provider_max_output_tokens_drives_wire_max_tokens() {
     // 经 CapturingTransport 捕获 adapter 发出的 wire 请求体，断言 max_tokens：
-    //   provider.max_output_tokens = None  → 沿用 From 写入的 4096 默认；
+    //   provider.max_output_tokens = None  → 沿用 From 写入的 16384 默认；
     //   provider.max_output_tokens = Some  → 覆盖为配置值。
-    for (configured, expected) in [(None, 4_096u64), (Some(8_192u32), 8_192)] {
+    for (configured, expected) in [(None, 16_384u64), (Some(8_192u32), 8_192)] {
         let captured = Arc::new(Mutex::new(None::<Value>));
         // 最小可完成的 SSE，仅供 stream() 跑通；本用例只断言请求体。
         let body = build_anthropic_body(&[

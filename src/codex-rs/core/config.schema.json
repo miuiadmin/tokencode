@@ -1717,7 +1717,7 @@
           "type": "object"
         },
         "max_output_tokens": {
-          "description": "模型单次回复的最大输出 token 上限（覆盖各协议的缺省值）。\n\n协议消费差异：Anthropic Messages 必填 `max_tokens`，缺省回落 4096（兼容 Claude 3 整代 4096 的输出上限）；OpenAI Chat Completions 可选，缺省不发（由服务端决定）； OpenAI Responses 不消费。现代模型（Claude 3.5+ / 4.x 等）输出上限更高，按需上调 以免长输出被静默截断（截断表现为 `stop_reason=\"max_tokens\"`，非错误）。取值应为 正整数；合法性最终由服务端校验，配置层不做下限断言。",
+          "description": "模型单次回复的最大输出 token 上限（覆盖各协议的缺省值）。\n\n协议消费差异：Anthropic Messages 必填 `max_tokens`，缺省回落 16384（内置 claude-opus-4-8 / claude-sonnet-5 均支持；接入低上限模型如 Claude 3 须显式下调）； OpenAI Chat Completions 可选，缺省不发（由服务端决定）；OpenAI Responses 不消费。 取值应为正整数；合法性最终由服务端校验，配置层不做下限断言。",
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"

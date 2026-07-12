@@ -386,8 +386,8 @@ fn test_built_in_model_providers_include_cross_vendor_providers() {
     assert_eq!(providers[MINIMAX_PROVIDER_ID].wire_api, WireApi::Chat);
     assert_eq!(providers[MOONSHOT_PROVIDER_ID].wire_api, WireApi::Chat);
 
-    // Anthropic Messages 的 max_tokens 必填，构造时应给了兜底上限。
-    assert_eq!(providers[ANTHROPIC_PROVIDER_ID].max_output_tokens, Some(4096));
+    // Anthropic 内置 provider 不硬编码 max_output_tokens，留 None 由 adapter 常量兜底。
+    assert_eq!(providers[ANTHROPIC_PROVIDER_ID].max_output_tokens, None);
 }
 
 #[test]

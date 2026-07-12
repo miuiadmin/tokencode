@@ -49,7 +49,7 @@ pub struct Provider {
     pub stream_idle_timeout: Duration,
     /// 模型单次回复的最大输出 token 上限（来自 `ModelProviderInfo.max_output_tokens`）。
     ///
-    /// 协议消费差异：Anthropic 必填，缺省回落 4096；Chat 可选，None 不发；Responses 不消费。
+    /// 协议消费差异：Anthropic 必填，缺省回落 16384（内置 Claude 模型均支持）；Chat 可选，None 不发；Responses 不消费。
     /// 由各 adapter 在 stream() 时取用（中立 `UnifiedRequest` 不承载此字段）。
     pub max_output_tokens: Option<u32>,
 }
