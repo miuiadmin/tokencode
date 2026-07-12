@@ -54,7 +54,9 @@ pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer
 // —— 原生多协议：跨厂商直连 provider 标识与默认 base_url ——
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
-pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
+// Anthropic adapter 约定 base_url 为根（不含 `/v1`），endpoint 自带 `v1/messages`
+// （见 codex-api anthropic.rs）；若误带 `/v1` 会拼成 `/v1/v1/messages` 导致 404。
+pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
 const GLM_PROVIDER_NAME: &str = "Z.ai GLM";
 pub const GLM_PROVIDER_ID: &str = "glm";
