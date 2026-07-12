@@ -3979,6 +3979,35 @@ impl Session {
     }
 }
 
+/// 构造子智能体会话启动的 analytics 事件入参（纯字段映射，便于单测覆盖 fork 血缘 / originator 等）。
+pub(crate) fn build_subagent_thread_started_input(
+    session_id: SessionId,
+    thread_id: ThreadId,
+    parent_thread_id: Option<ThreadId>,
+    thread_config: &ThreadConfigSnapshot,
+    subagent_source: SubAgentSource,
+    client_name: String,
+    client_version: String,
+    created_at: u64,
+) -> SubAgentThreadStartedInput {
+    SubAgentThreadStartedInput {
+        session_id: session_id.to_string(),
+        thread_id: thread_id.to_string(),
+        parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
+        forked_from_thread_id: thread_config
+            .forked_from_thread_id
+            .as_ref()
+            .map(|thread_id| thread_id.to_string()),
+        product_client_id: thread_config.originator.clone(),
+        client_name,
+        client_version,
+        model: thread_config.model.clone(),
+        ephemeral: thread_config.ephemeral,
+        subagent_source,
+        created_at,
+    }
+}
+
 pub(crate) fn emit_subagent_session_started(
     analytics_events_client: &AnalyticsEventsClient,
     client_metadata: AppServerClientMetadata,
@@ -4000,21 +4029,17 @@ pub(crate) fn emit_subagent_session_started(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    analytics_events_client.track_subagent_thread_started(SubAgentThreadStartedInput {
-        session_id: session_id.to_string(),
-        thread_id: thread_id.to_string(),
-        parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
-        forked_from_thread_id: thread_config
-            .forked_from_thread_id
-            .map(|thread_id| thread_id.to_string()),
-        product_client_id: thread_config.originator.clone(),
-        client_name,
-        client_version,
-        model: thread_config.model,
-        ephemeral: thread_config.ephemeral,
-        subagent_source,
-        created_at,
-    });
+    analytics_events_client
+        .track_subagent_thread_started(build_subagent_thread_started_input(
+            session_id,
+            thread_id,
+            parent_thread_id,
+            &thread_config,
+            subagent_source,
+            client_name,
+            client_version,
+            created_at,
+        ));
 }
 
 /// Builds the hook engine for one config snapshot, including any enabled plugin hooks.

@@ -6,31 +6,15 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
-pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
-pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
-pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO";
-
+/// 内建 Statsig 指标导出器已停用。
+///
+/// 历史上 `OtelExporter::Statsig` 在 release 构建里会解析为指向 `ab.chatgpt.com` 的
+/// OTLP/HTTP 导出器（带硬编码 Statsig client key）。TokenCode 不使用该云端点，故 `Statsig`
+/// 现统一解析为 `None`：不再外发任何指标，相关 endpoint / key 常量已移除。保留 `Statsig`
+/// 变体仅为兼容既有配置默认值与 windows-sandbox 提权载荷的形态（其内容不携带任何密钥）。
 pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     match exporter {
-        OtelExporter::Statsig => {
-            // Keep the built-in Statsig default off in debug builds so
-            // incremental local development and test runs do not emit
-            // best-effort OTEL traffic unless a test or binary opts into an
-            // explicit exporter configuration.
-            if cfg!(debug_assertions) {
-                return OtelExporter::None;
-            }
-
-            OtelExporter::OtlpHttp {
-                endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
-                headers: HashMap::from([(
-                    STATSIG_API_KEY_HEADER.to_string(),
-                    STATSIG_API_KEY.to_string(),
-                )]),
-                protocol: OtelHttpProtocol::Json,
-                tls: None,
-            }
-        }
+        OtelExporter::Statsig => OtelExporter::None,
         _ => exporter.clone(),
     }
 }
@@ -110,7 +94,8 @@ mod tests {
     use super::resolve_exporter;
 
     #[test]
-    fn statsig_default_metrics_exporter_is_disabled_in_debug_builds() {
+    fn statsig_exporter_resolves_to_none() {
+        // Statsig 不再外发指标，所有构建（debug + release）都解析为 None。
         assert!(matches!(
             resolve_exporter(&OtelExporter::Statsig),
             OtelExporter::None

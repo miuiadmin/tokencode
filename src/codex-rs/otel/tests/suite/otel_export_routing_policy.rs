@@ -88,7 +88,6 @@ fn auth_env_metadata() -> AuthEnvTelemetryMetadata {
         codex_api_key_env_enabled: true,
         provider_env_key_name: Some("configured".to_string()),
         provider_env_key_present: Some(true),
-        refresh_token_url_override_present: true,
     }
 }
 
@@ -600,12 +599,6 @@ fn otel_export_routing_policy_routes_api_request_auth_observability() {
         Some("true")
     );
     assert_eq!(
-        request_log_attrs
-            .get("auth.env_refresh_token_url_override_present")
-            .map(String::as_str),
-        Some("true")
-    );
-    assert_eq!(
         request_log_attrs.get("auth.agent_id").map(String::as_str),
         Some("agent-runtime-otel")
     );
@@ -786,12 +779,6 @@ fn otel_export_routing_policy_routes_websocket_connect_auth_observability() {
             .get("auth.recovery_phase")
             .map(String::as_str),
         Some("reload")
-    );
-    assert_eq!(
-        connect_trace_attrs
-            .get("auth.env_refresh_token_url_override_present")
-            .map(String::as_str),
-        Some("true")
     );
     assert_eq!(
         connect_trace_attrs.get("auth.agent_id").map(String::as_str),

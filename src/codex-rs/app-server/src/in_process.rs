@@ -383,7 +383,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
                 .await;
         let analytics_events_client =
-            analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
+            analytics_events_client_from_config(args.config.as_ref());
         let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             analytics_events_client.clone(),

@@ -80,7 +80,6 @@ pub struct AuthEnvTelemetryMetadata {
     pub codex_api_key_env_enabled: bool,
     pub provider_env_key_name: Option<String>,
     pub provider_env_key_present: Option<bool>,
-    pub refresh_token_url_override_present: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -472,7 +471,6 @@ impl SessionTelemetry {
                 auth.env_codex_api_key_enabled = self.metadata.auth_env.codex_api_key_env_enabled,
                 auth.env_provider_key_name = self.metadata.auth_env.provider_env_key_name.as_deref(),
                 auth.env_provider_key_present = self.metadata.auth_env.provider_env_key_present,
-                auth.env_refresh_token_url_override_present = self.metadata.auth_env.refresh_token_url_override_present,
                 reasoning_effort = reasoning_effort.as_ref().map(ToString::to_string),
                 reasoning_summary = %reasoning_summary,
                 context_window = context_window,
@@ -576,7 +574,6 @@ impl SessionTelemetry {
                 auth.env_codex_api_key_enabled = self.metadata.auth_env.codex_api_key_env_enabled,
                 auth.env_provider_key_name = self.metadata.auth_env.provider_env_key_name.as_deref(),
                 auth.env_provider_key_present = self.metadata.auth_env.provider_env_key_present,
-                auth.env_refresh_token_url_override_present = self.metadata.auth_env.refresh_token_url_override_present,
                 auth.request_id = request_id,
                 auth.cf_ray = cf_ray,
                 auth.error = auth_error,
@@ -632,7 +629,6 @@ impl SessionTelemetry {
                 auth.env_codex_api_key_enabled = self.metadata.auth_env.codex_api_key_env_enabled,
                 auth.env_provider_key_name = self.metadata.auth_env.provider_env_key_name.as_deref(),
                 auth.env_provider_key_present = self.metadata.auth_env.provider_env_key_present,
-                auth.env_refresh_token_url_override_present = self.metadata.auth_env.refresh_token_url_override_present,
                 auth.connection_reused = connection_reused,
                 auth.request_id = request_id,
                 auth.cf_ray = cf_ray,
@@ -676,7 +672,6 @@ impl SessionTelemetry {
                 auth.env_codex_api_key_enabled = self.metadata.auth_env.codex_api_key_env_enabled,
                 auth.env_provider_key_name = self.metadata.auth_env.provider_env_key_name.as_deref(),
                 auth.env_provider_key_present = self.metadata.auth_env.provider_env_key_present,
-                auth.env_refresh_token_url_override_present = self.metadata.auth_env.refresh_token_url_override_present,
                 auth.connection_reused = connection_reused,
                 auth.agent_id = agent_identity_telemetry.map(|metadata| metadata.agent_id.as_str()),
                 auth.task_id = agent_identity_telemetry.map(|metadata| metadata.task_id.as_str()),

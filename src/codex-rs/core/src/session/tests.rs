@@ -4384,44 +4384,26 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 }
 
 #[tokio::test]
-async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
-    use wiremock::Mock;
-    use wiremock::MockServer;
-    use wiremock::ResponseTemplate;
-    use wiremock::matchers::method;
-    use wiremock::matchers::path;
-
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/codex/analytics-events/events"))
-        .respond_with(ResponseTemplate::new(200))
-        .mount(&server)
-        .await;
-
-    let auth_manager =
-        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let analytics_events_client = AnalyticsEventsClient::new(
-        auth_manager,
-        server.uri(),
-        /*analytics_enabled*/ Some(true),
-    );
-
+async fn build_subagent_thread_started_input_maps_fork_lineage_and_originator() {
+    // 覆盖 emit_subagent_session_started 的事件构造逻辑：fork 血缘 / parent 链 /
+    // originator→product_client_id 等字段映射。原 e2e 校验依赖已下线的云上报通道，
+    // 这里改为对纯构造函数 build_subagent_thread_started_input 直接断言。
     let parent_thread_id = ThreadId::new();
     let forked_from_thread_id = ThreadId::new();
     let child_thread_id = ThreadId::new();
+    let parent_thread_id_str = parent_thread_id.to_string();
+    let forked_from_thread_id_str = forked_from_thread_id.to_string();
+    let child_thread_id_str = child_thread_id.to_string();
+
     let mut session_configuration = make_session_configuration_for_tests().await;
     session_configuration.forked_from_thread_id = Some(forked_from_thread_id);
+    let thread_config = session_configuration.thread_config_snapshot();
 
-    emit_subagent_session_started(
-        &analytics_events_client,
-        AppServerClientMetadata {
-            client_name: Some("codex-tui".to_string()),
-            client_version: Some("1.0.0".to_string()),
-        },
+    let input = build_subagent_thread_started_input(
         SessionId::from(child_thread_id),
         child_thread_id,
         Some(parent_thread_id),
-        session_configuration.thread_config_snapshot(),
+        &thread_config,
         SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
@@ -4429,41 +4411,33 @@ async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
             agent_nickname: None,
             agent_role: None,
         },
+        "codex-tui".to_string(),
+        "1.0.0".to_string(),
+        /*created_at*/ 1_700_000_000,
     );
 
-    let event = timeout(Duration::from_secs(1), async {
-        'wait_for_event: loop {
-            if let Some(requests) = server.received_requests().await {
-                for request in requests {
-                    let payload: serde_json::Value =
-                        serde_json::from_slice(&request.body).expect("valid analytics payload");
-                    if let Some(event) = payload["events"].as_array().and_then(|events| {
-                        events
-                            .iter()
-                            .find(|event| event["event_type"] == "codex_thread_initialized")
-                    }) {
-                        break 'wait_for_event event.clone();
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("subagent initialization analytics should be emitted");
-
+    // fork 血缘：forked_from_thread_id 由 thread_config 正确映射
     assert_eq!(
-        event["event_params"]["parent_thread_id"],
-        parent_thread_id.to_string()
+        input.forked_from_thread_id.as_deref(),
+        Some(forked_from_thread_id_str.as_str())
     );
+    // parent 链：parent_thread_id 透传
     assert_eq!(
-        event["event_params"]["forked_from_thread_id"],
-        forked_from_thread_id.to_string()
+        input.parent_thread_id.as_deref(),
+        Some(parent_thread_id_str.as_str())
     );
-    assert_eq!(
-        event["event_params"]["app_server_client"]["product_client_id"],
-        "test_originator"
-    );
+    // originator → product_client_id（make_session_configuration_for_tests 默认 "test_originator"）
+    assert_eq!(input.product_client_id, "test_originator");
+    // 其余透传字段
+    assert_eq!(input.session_id.as_str(), child_thread_id_str.as_str());
+    assert_eq!(input.thread_id.as_str(), child_thread_id_str.as_str());
+    assert_eq!(input.client_name, "codex-tui");
+    assert_eq!(input.client_version, "1.0.0");
+    assert_eq!(input.created_at, 1_700_000_000);
+    assert!(matches!(
+        input.subagent_source,
+        SubAgentSource::ThreadSpawn { depth: 1, .. }
+    ));
 }
 
 async fn resolved_environments_for_configuration(
@@ -5477,11 +5451,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         ),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
-        analytics_events_client: AnalyticsEventsClient::new(
-            Arc::clone(&auth_manager),
-            config.chatgpt_base_url.trim_end_matches('/').to_string(),
-            config.analytics_enabled,
-        ),
+        analytics_events_client: AnalyticsEventsClient::new(config.analytics_enabled),
         hooks: arc_swap::ArcSwap::from_pointee(Hooks::new(HooksConfig {
             legacy_notify_argv: config.notify.clone(),
             ..HooksConfig::default()
@@ -7721,11 +7691,7 @@ where
         ),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
-        analytics_events_client: AnalyticsEventsClient::new(
-            Arc::clone(&auth_manager),
-            config.chatgpt_base_url.trim_end_matches('/').to_string(),
-            config.analytics_enabled,
-        ),
+        analytics_events_client: AnalyticsEventsClient::new(config.analytics_enabled),
         hooks: arc_swap::ArcSwap::from_pointee(Hooks::new(HooksConfig {
             legacy_notify_argv: config.notify.clone(),
             ..HooksConfig::default()

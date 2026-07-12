@@ -83,7 +83,6 @@ fn emit_feedback_request_tags_records_sentry_feedback_fields() {
         codex_api_key_env_enabled: true,
         provider_env_key_name: Some("configured".to_string()),
         provider_env_key_present: Some(true),
-        refresh_token_url_override_present: true,
     };
 
     emit_feedback_request_tags_with_auth_env(
@@ -142,11 +141,6 @@ fn emit_feedback_request_tags_records_sentry_feedback_fields() {
         tags.get("auth_env_provider_key_present")
             .map(String::as_str),
         Some("\"true\"")
-    );
-    assert_eq!(
-        tags.get("auth_env_refresh_token_url_override_present")
-            .map(String::as_str),
-        Some("true")
     );
     assert_eq!(
         tags.get("auth_request_id").map(String::as_str),
@@ -327,7 +321,6 @@ fn emit_feedback_request_tags_preserves_auth_env_fields_for_legacy_emitters() {
         codex_api_key_env_enabled: true,
         provider_env_key_name: Some("configured".to_string()),
         provider_env_key_present: Some(true),
-        refresh_token_url_override_present: true,
     };
 
     emit_feedback_request_tags_with_auth_env(
@@ -405,11 +398,6 @@ fn emit_feedback_request_tags_preserves_auth_env_fields_for_legacy_emitters() {
         tags.get("auth_env_provider_key_present")
             .map(String::as_str),
         Some("\"true\"")
-    );
-    assert_eq!(
-        tags.get("auth_env_refresh_token_url_override_present")
-            .map(String::as_str),
-        Some("true")
     );
     assert_eq!(
         tags.get("auth_recovery_followup_success")

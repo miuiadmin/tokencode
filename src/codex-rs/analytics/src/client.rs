@@ -37,9 +37,6 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerResponse;
-use codex_login::AuthManager;
-use codex_login::CodexAuth;
-use codex_login::default_client::create_client;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -47,11 +44,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 const ANALYTICS_EVENTS_QUEUE_SIZE: usize = 256;
-const ANALYTICS_EVENTS_TIMEOUT: Duration = Duration::from_secs(10);
 const ANALYTICS_EVENT_DEDUPE_MAX_KEYS: usize = 4096;
 
 #[derive(Clone)]
@@ -66,47 +61,13 @@ pub struct AnalyticsEventsClient {
     queue: Option<AnalyticsEventsQueue>,
 }
 
+/// analytics 事件投递目的地。TokenCode 已移除云端 HTTP 上报，仅保留 debug 构建下的
+/// 本地文件捕获（经 `ANALYTICS_EVENTS_CAPTURE_FILE` 环境变量开启）。
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AnalyticsEventsDestination {
-    Http {
-        url: String,
-    },
-    #[cfg(debug_assertions)]
     CaptureFile {
         path: PathBuf,
     },
-}
-
-impl AnalyticsEventsDestination {
-    fn from_base_url(base_url: String) -> Self {
-        let capture_file = analytics_capture_file_from_env();
-        Self::from_base_url_and_capture_file(base_url, capture_file)
-    }
-
-    fn from_base_url_and_capture_file(base_url: String, capture_file: Option<PathBuf>) -> Self {
-        #[cfg(debug_assertions)]
-        if let Some(path) = capture_file {
-            if let Err(err) = crate::analytics_capture::initialize(&path) {
-                tracing::error!(
-                    path = %path.display(),
-                    "failed to initialize analytics event capture; network delivery remains disabled: {err}"
-                );
-            }
-            tracing::warn!(
-                path = %path.display(),
-                "analytics event capture enabled; network delivery is disabled"
-            );
-            return Self::CaptureFile { path };
-        }
-
-        #[cfg(not(debug_assertions))]
-        let _ = capture_file;
-
-        let base_url = base_url.trim_end_matches('/');
-        Self::Http {
-            url: format!("{base_url}/codex/analytics-events/events"),
-        }
-    }
 }
 
 fn analytics_capture_file_from_env() -> Option<PathBuf> {
@@ -122,14 +83,14 @@ fn analytics_capture_file_from_env() -> Option<PathBuf> {
 }
 
 impl AnalyticsEventsQueue {
-    fn new(auth_manager: Arc<AuthManager>, destination: AnalyticsEventsDestination) -> Self {
+    fn new(destination: AnalyticsEventsDestination) -> Self {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
         tokio::spawn(async move {
             let mut reducer = AnalyticsReducer::default();
             while let Some(input) = receiver.recv().await {
                 let mut events = Vec::new();
                 reducer.ingest(input, &mut events).await;
-                send_track_events(&auth_manager, &destination, events).await;
+                send_track_events(&destination, events).await;
             }
         });
         Self {
@@ -189,16 +150,31 @@ impl AnalyticsEventsQueue {
 }
 
 impl AnalyticsEventsClient {
-    pub fn new(
-        auth_manager: Arc<AuthManager>,
-        base_url: String,
-        analytics_enabled: Option<bool>,
-    ) -> Self {
-        let destination = AnalyticsEventsDestination::from_base_url(base_url);
-        Self {
-            queue: (analytics_enabled != Some(false))
-                .then(|| AnalyticsEventsQueue::new(Arc::clone(&auth_manager), destination)),
+    pub fn new(analytics_enabled: Option<bool>) -> Self {
+        if analytics_enabled == Some(false) {
+            return Self::disabled();
         }
+        // TokenCode 不再向云端上报 analytics。仅 debug 构建下经
+        // ANALYTICS_EVENTS_CAPTURE_FILE 环境变量开启本地文件捕获，供测试与本地统计。
+        #[cfg(debug_assertions)]
+        if let Some(path) = analytics_capture_file_from_env() {
+            if let Err(err) = crate::analytics_capture::initialize(&path) {
+                tracing::error!(
+                    path = %path.display(),
+                    "failed to initialize analytics event capture: {err}"
+                );
+                return Self::disabled();
+            }
+            tracing::warn!(
+                path = %path.display(),
+                "analytics event capture enabled; network delivery is disabled"
+            );
+            let destination = AnalyticsEventsDestination::CaptureFile { path };
+            return Self {
+                queue: Some(AnalyticsEventsQueue::new(destination)),
+            };
+        }
+        Self::disabled()
     }
 
     pub fn disabled() -> Self {
@@ -546,7 +522,6 @@ impl AnalyticsEventsClient {
 }
 
 async fn send_track_events(
-    auth_manager: &AuthManager,
     destination: &AnalyticsEventsDestination,
     events: Vec<TrackEventRequest>,
 ) {
@@ -554,15 +529,8 @@ async fn send_track_events(
         return;
     }
 
-    let Some(auth) = auth_manager.auth().await else {
-        return;
-    };
-    if !auth.uses_codex_backend() {
-        return;
-    }
-
     for events in track_event_request_batches(events) {
-        send_track_events_request(&auth, destination, events).await;
+        send_track_events_request(destination, events).await;
     }
 }
 
@@ -590,45 +558,22 @@ fn track_event_request_batches(events: Vec<TrackEventRequest>) -> Vec<Vec<TrackE
 }
 
 async fn send_track_events_request(
-    auth: &CodexAuth,
     destination: &AnalyticsEventsDestination,
     events: Vec<TrackEventRequest>,
 ) {
-    if events.is_empty() {
-        return;
-    }
-
-    let payload = TrackEventsRequest { events };
-
     #[cfg(debug_assertions)]
-    if capture_track_events_request(destination, &payload) {
-        return;
+    {
+        if events.is_empty() {
+            return;
+        }
+        let payload = TrackEventsRequest { events };
+        capture_track_events_request(destination, &payload);
     }
-
-    let url = match destination {
-        AnalyticsEventsDestination::Http { url } => url,
-        #[cfg(debug_assertions)]
-        AnalyticsEventsDestination::CaptureFile { .. } => return,
-    };
-    let response = create_client()
-        .post(url)
-        .timeout(ANALYTICS_EVENTS_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers())
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await;
-
-    match response {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::warn!("events failed with status {status}: {body}");
-        }
-        Err(err) => {
-            tracing::warn!("failed to send events request: {err}");
-        }
+    // TokenCode 已移除云端 analytics 上报；release 构建无本地捕获，事件直接丢弃。
+    #[cfg(not(debug_assertions))]
+    {
+        drop(events);
+        let _ = destination;
     }
 }
 
@@ -637,9 +582,7 @@ fn capture_track_events_request(
     destination: &AnalyticsEventsDestination,
     payload: &TrackEventsRequest,
 ) -> bool {
-    let AnalyticsEventsDestination::CaptureFile { path } = destination else {
-        return false;
-    };
+    let AnalyticsEventsDestination::CaptureFile { path } = destination;
 
     if let Err(err) = crate::analytics_capture::append_payload(path, payload) {
         tracing::error!(

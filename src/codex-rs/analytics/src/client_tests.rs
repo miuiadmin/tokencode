@@ -107,69 +107,6 @@ fn client_with_receiver() -> (AnalyticsEventsClient, mpsc::Receiver<AnalyticsFac
     (AnalyticsEventsClient { queue: Some(queue) }, receiver)
 }
 
-#[test]
-#[cfg(debug_assertions)]
-fn analytics_destination_uses_explicit_capture_file() {
-    let capture_path = unique_capture_path("destination");
-    let destination = AnalyticsEventsDestination::from_base_url_and_capture_file(
-        "https://chatgpt.com/backend-api/".to_string(),
-        Some(capture_path.clone()),
-    );
-
-    assert_eq!(
-        destination,
-        AnalyticsEventsDestination::CaptureFile {
-            path: capture_path.clone()
-        }
-    );
-    assert_eq!(
-        fs::read_to_string(&capture_path).expect("read capture file"),
-        ""
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mode = fs::metadata(&capture_path)
-            .expect("read capture file metadata")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-    fs::remove_file(capture_path).expect("remove capture file");
-}
-
-#[test]
-fn analytics_destination_uses_http_without_capture_file() {
-    let destination = AnalyticsEventsDestination::from_base_url_and_capture_file(
-        "https://chatgpt.com/backend-api/".to_string(),
-        /*capture_file*/ None,
-    );
-
-    assert_eq!(
-        destination,
-        AnalyticsEventsDestination::Http {
-            url: "https://chatgpt.com/backend-api/codex/analytics-events/events".to_string()
-        }
-    );
-}
-
-#[test]
-#[cfg(not(debug_assertions))]
-fn analytics_destination_ignores_capture_file_in_release() {
-    let destination = AnalyticsEventsDestination::from_base_url_and_capture_file(
-        "https://chatgpt.com/backend-api/".to_string(),
-        Some(std::path::PathBuf::from("ignored.jsonl")),
-    );
-
-    assert_eq!(
-        destination,
-        AnalyticsEventsDestination::Http {
-            url: "https://chatgpt.com/backend-api/codex/analytics-events/events".to_string()
-        }
-    );
-}
-
 #[tokio::test]
 #[cfg(debug_assertions)]
 async fn capture_file_writes_exact_serialized_request() {
@@ -179,9 +116,8 @@ async fn capture_file_writes_exact_serialized_request() {
     };
     let event = sample_regular_track_event("thread-1");
     let expected_event = serde_json::to_value(&event).expect("serialize expected event");
-    let auth = codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing();
 
-    send_track_events_request(&auth, &destination, vec![event]).await;
+    send_track_events_request(&destination, vec![event]).await;
 
     let contents = fs::read_to_string(&capture_path).expect("read capture file");
     let lines = contents.lines().collect::<Vec<_>>();
@@ -200,7 +136,6 @@ async fn capture_file_writes_final_batches_as_separate_lines() {
     let destination = AnalyticsEventsDestination::CaptureFile {
         path: capture_path.clone(),
     };
-    let auth = codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let events = vec![
         sample_regular_track_event("thread-1"),
         sample_accepted_line_fingerprint_event("thread-2"),
@@ -208,7 +143,7 @@ async fn capture_file_writes_final_batches_as_separate_lines() {
     ];
 
     for batch in track_event_request_batches(events) {
-        send_track_events_request(&auth, &destination, batch).await;
+        send_track_events_request(&destination, batch).await;
     }
 
     let contents = fs::read_to_string(&capture_path).expect("read capture file");

@@ -155,9 +155,6 @@ pub fn emit_feedback_request_tags_with_auth_env(
         auth_env_provider_key_present = tracing::field::debug(
             &auth_env.provider_env_key_present.map_or_else(String::new, |value| value.to_string())
         ),
-        auth_env_refresh_token_url_override_present = tracing::field::debug(
-            auth_env.refresh_token_url_override_present
-        ),
     );
 }
 

@@ -1027,13 +1027,8 @@ impl Session {
                 });
             }
 
-            let analytics_events_client = analytics_events_client.unwrap_or_else(|| {
-                AnalyticsEventsClient::new(
-                    Arc::clone(&auth_manager),
-                    config.chatgpt_base_url.trim_end_matches('/').to_string(),
-                    config.analytics_enabled,
-                )
-            });
+            let analytics_events_client = analytics_events_client
+                .unwrap_or_else(|| AnalyticsEventsClient::new(config.analytics_enabled));
             // Keep one stable manager handle for the session so extension resource clients
             // automatically observe the manager installed at startup and on later refreshes.
             let mcp_connection_manager = Arc::new(arc_swap::ArcSwap::from_pointee(
