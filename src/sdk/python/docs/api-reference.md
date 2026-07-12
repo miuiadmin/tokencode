@@ -1,6 +1,6 @@
 # TokenCode Python SDK (Beta) - API Reference
 
-Public surface of `openai_codex` for TokenCode workflows.
+Public surface of `tokencode_sdk` for TokenCode workflows.
 
 This SDK is in beta. Public APIs may change before `1.0`. Turn streams are routed by turn ID so one client can consume multiple active turns concurrently.
 Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optional `approval_mode` override.
@@ -8,7 +8,7 @@ Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optio
 ## Package Entry
 
 ```python
-from openai_codex import (
+from tokencode_sdk import (
     Codex,
     AsyncCodex,
     CodexConfig,
@@ -32,7 +32,7 @@ from openai_codex import (
     SkillInput,
     MentionInput,
 )
-from openai_codex.types import (
+from tokencode_sdk.types import (
     Account,
     AccountLoginCompletedNotification,
     CancelLoginAccountResponse,
@@ -46,9 +46,9 @@ from openai_codex.types import (
 )
 ```
 
-- Version: `openai_codex.__version__`
+- Version: `tokencode_sdk.__version__`
 - Requires Python >= 3.10
-- Public TokenCode protocol value and event types live in `openai_codex.types`
+- Public TokenCode protocol value and event types live in `tokencode_sdk.types`
 
 ## Codex (sync)
 
@@ -189,7 +189,7 @@ Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 Use `sandbox=` consistently on thread lifecycle methods and turns:
 
 ```python
-from openai_codex import Codex, Sandbox
+from tokencode_sdk import Codex, Sandbox
 
 with Codex() as codex:
     thread = codex.thread_start(sandbox=Sandbox.workspace_write)
@@ -256,7 +256,7 @@ Use a plain `str` as shorthand for `TextInput(...)` anywhere a turn input is acc
 The SDK wrappers return and accept public TokenCode protocol models wherever possible:
 
 ```python
-from openai_codex.types import (
+from tokencode_sdk.types import (
     Account,
     AccountLoginCompletedNotification,
     CancelLoginAccountResponse,
@@ -271,7 +271,7 @@ from openai_codex.types import (
 ## Retry + errors
 
 ```python
-from openai_codex import (
+from tokencode_sdk import (
     retry_on_overload,
     JsonRpcError,
     MethodNotFoundError,
@@ -287,7 +287,7 @@ from openai_codex import (
 ## Example
 
 ```python
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex() as codex:
     thread = codex.thread_start(model="gpt-5.4", config={"model_reasoning_effort": "high"})

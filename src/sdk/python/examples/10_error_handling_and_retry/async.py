@@ -14,13 +14,13 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from openai_codex import (
+from tokencode_sdk import (
     AsyncCodex,
     JsonRpcError,
     ServerBusyError,
     is_retryable_error,
 )
-from openai_codex.types import TurnStatus
+from tokencode_sdk.types import TurnStatus
 
 ResultT = TypeVar("ResultT")
 

@@ -13,7 +13,7 @@ from _bootstrap import (
 
 ensure_local_sdk_src()
 
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex(config=runtime_config()) as codex:
     print("Server:", server_label(codex.metadata))

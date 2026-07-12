@@ -12,5 +12,5 @@ if src_str in sys.path:
 sys.path.insert(0, src_str)
 
 for module_name in list(sys.modules):
-    if module_name == "openai_codex" or module_name.startswith("openai_codex."):
+    if module_name == "tokencode_sdk" or module_name.startswith("tokencode_sdk."):
         sys.modules.pop(module_name)

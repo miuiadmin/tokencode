@@ -17,8 +17,8 @@ from app_server_helpers import (
     assistant_message_with_phase,
 )
 
-from openai_codex import AsyncCodex, Codex
-from openai_codex.generated.v2_all import MessagePhase
+from tokencode_sdk import AsyncCodex, Codex
+from tokencode_sdk.generated.v2_all import MessagePhase
 
 
 def test_sync_thread_run_uses_mock_responses(

@@ -2,8 +2,8 @@
 
 ## Is the Python SDK stable?
 
-`openai-codex` is a public beta. Install it with
-`pip install openai-codex`; public APIs may change before `1.0`. While beta
+`tokencode-sdk` is a public beta. Install it with
+`pip install tokencode-sdk`; public APIs may change before `1.0`. While beta
 releases are the only published SDK releases, pip selects the latest beta.
 After a stable release exists, pass `--pre` to opt into newer prereleases.
 
@@ -66,7 +66,7 @@ If you are migrating older code, update these names:
 Use the same `sandbox=` keyword for threads and turns:
 
 ```python
-from openai_codex import Sandbox
+from tokencode_sdk import Sandbox
 
 thread = codex.thread_start(sandbox=Sandbox.workspace_write)
 result = thread.run("Review only.", sandbox=Sandbox.read_only)
@@ -96,7 +96,7 @@ This avoids duplicate ways to do the same operation and keeps behavior explicit.
 
 Common causes:
 
-- installation is incomplete and the pinned `openai-codex-cli-bin` dependency is missing
+- installation is incomplete and the pinned `tokencode-cli-bin` dependency is missing
 - local `codex_bin` override points to a missing file
 - a custom local TokenCode executable does not support the SDK operation being used
 

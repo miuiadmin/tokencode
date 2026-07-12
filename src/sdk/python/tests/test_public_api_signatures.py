@@ -7,9 +7,9 @@ from typing import Any
 
 import tomllib
 
-import openai_codex
-import openai_codex.types as public_types
-from openai_codex import (
+import tokencode_sdk
+import tokencode_sdk.types as public_types
+from tokencode_sdk import (
     ApprovalMode,
     AsyncCodex,
     AsyncThread,
@@ -21,8 +21,8 @@ from openai_codex import (
     TurnHandle,
     TurnResult,
 )
-from openai_codex._initialize_metadata import validate_initialize_metadata
-from openai_codex.types import InitializeResponse
+from tokencode_sdk._initialize_metadata import validate_initialize_metadata
+from tokencode_sdk.types import InitializeResponse
 
 EXPECTED_ROOT_EXPORTS = [
     "__version__",
@@ -207,14 +207,14 @@ def test_package_and_default_client_versions_follow_project_version() -> None:
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     pyproject = tomllib.loads(pyproject_path.read_text())
 
-    assert openai_codex.__version__ == pyproject["project"]["version"]
-    assert CodexConfig().client_version == openai_codex.__version__
+    assert tokencode_sdk.__version__ == pyproject["project"]["version"]
+    assert CodexConfig().client_version == tokencode_sdk.__version__
 
 
 def test_curated_public_api_has_builtin_help_documentation() -> None:
     """The package's normal ``help()`` surface should explain common first-use APIs."""
     documented = {
-        "module": openai_codex,
+        "module": tokencode_sdk,
         "Codex": Codex,
         "AsyncCodex": AsyncCodex,
         "CodexConfig": CodexConfig,
@@ -237,24 +237,24 @@ def test_curated_public_api_has_builtin_help_documentation() -> None:
 
 def test_package_includes_py_typed_marker() -> None:
     """The wheel should advertise that inline type information is available."""
-    marker = resources.files("openai_codex").joinpath("py.typed")
+    marker = resources.files("tokencode_sdk").joinpath("py.typed")
     assert marker.is_file()
 
 
 def test_package_root_exports_only_public_api() -> None:
     """The package root should expose the supported SDK surface, not internals."""
-    assert openai_codex.__all__ == EXPECTED_ROOT_EXPORTS
-    assert {name: hasattr(openai_codex, name) for name in EXPECTED_ROOT_EXPORTS} == dict.fromkeys(
+    assert tokencode_sdk.__all__ == EXPECTED_ROOT_EXPORTS
+    assert {name: hasattr(tokencode_sdk, name) for name in EXPECTED_ROOT_EXPORTS} == dict.fromkeys(
         EXPECTED_ROOT_EXPORTS, True
     )
     assert {
-        "CodexClient": hasattr(openai_codex, "CodexClient"),
-        "AsyncCodexClient": hasattr(openai_codex, "AsyncCodexClient"),
-        "InitializeResponse": hasattr(openai_codex, "InitializeResponse"),
-        "ThreadStartParams": hasattr(openai_codex, "ThreadStartParams"),
-        "TurnStartParams": hasattr(openai_codex, "TurnStartParams"),
-        "TurnCompletedNotification": hasattr(openai_codex, "TurnCompletedNotification"),
-        "TurnStatus": hasattr(openai_codex, "TurnStatus"),
+        "CodexClient": hasattr(tokencode_sdk, "CodexClient"),
+        "AsyncCodexClient": hasattr(tokencode_sdk, "AsyncCodexClient"),
+        "InitializeResponse": hasattr(tokencode_sdk, "InitializeResponse"),
+        "ThreadStartParams": hasattr(tokencode_sdk, "ThreadStartParams"),
+        "TurnStartParams": hasattr(tokencode_sdk, "TurnStartParams"),
+        "TurnCompletedNotification": hasattr(tokencode_sdk, "TurnCompletedNotification"),
+        "TurnStatus": hasattr(tokencode_sdk, "TurnStatus"),
     } == {
         "CodexClient": False,
         "AsyncCodexClient": False,
@@ -269,7 +269,7 @@ def test_package_root_exports_only_public_api() -> None:
 def test_package_star_import_matches_public_api() -> None:
     """Star imports should follow the same explicit public API list."""
     namespace: dict[str, object] = {}
-    exec("from openai_codex import *", namespace)
+    exec("from tokencode_sdk import *", namespace)
 
     exported = set(namespace) - {"__builtins__"}
     assert exported == set(EXPECTED_ROOT_EXPORTS)
@@ -286,7 +286,7 @@ def test_types_module_exports_curated_public_types() -> None:
 def test_types_star_import_matches_public_types() -> None:
     """Star imports from the type module should match its explicit export list."""
     namespace: dict[str, object] = {}
-    exec("from openai_codex.types import *", namespace)
+    exec("from tokencode_sdk.types import *", namespace)
 
     exported = set(namespace) - {"__builtins__"}
     assert exported == set(EXPECTED_TYPES_EXPORTS)
@@ -296,11 +296,11 @@ def test_examples_use_public_import_surfaces() -> None:
     """Examples should teach users the public root and type-module imports only."""
     examples_root = Path(__file__).resolve().parents[1] / "examples"
     private_import_markers = [
-        "openai_codex.api",
-        "openai_codex.client",
-        "openai_codex.generated",
-        "openai_codex.models",
-        "openai_codex.retry",
+        "tokencode_sdk.api",
+        "tokencode_sdk.client",
+        "tokencode_sdk.generated",
+        "tokencode_sdk.models",
+        "tokencode_sdk.retry",
     ]
 
     offenders = {

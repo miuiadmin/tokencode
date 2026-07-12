@@ -5,8 +5,8 @@ import asyncio
 from app_server_harness import AppServerHarness
 from app_server_helpers import response_approval_policy
 
-from openai_codex import ApprovalMode, AsyncCodex, Codex
-from openai_codex.generated.v2_all import AskForApprovalValue, ThreadResumeParams
+from tokencode_sdk import ApprovalMode, AsyncCodex, Codex
+from tokencode_sdk.generated.v2_all import AskForApprovalValue, ThreadResumeParams
 
 
 def test_thread_resume_inherits_deny_all_approval_mode(tmp_path) -> None:

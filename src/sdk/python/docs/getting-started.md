@@ -8,7 +8,7 @@ with a multi-turn thread.
 Install the SDK:
 
 ```bash
-pip install openai-codex
+pip install tokencode-sdk
 ```
 
 Requirements:
@@ -16,10 +16,10 @@ Requirements:
 - Python `>=3.10`
 - An existing TokenCode account session, or one of the login flows below
 
-The SDK installs its compatible `openai-codex-cli-bin` runtime dependency
+The SDK installs its compatible `tokencode-cli-bin` runtime dependency
 automatically. While beta releases are the only published SDK releases, this
 normal install command selects the latest beta. After a stable release exists,
-use `pip install --pre openai-codex` to opt into a newer prerelease.
+use `pip install --pre tokencode-sdk` to opt into a newer prerelease.
 
 ## 2. Authenticate When Needed
 
@@ -27,7 +27,7 @@ Existing TokenCode authentication is reused automatically. For ChatGPT browser
 login:
 
 ```python
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex() as codex:
     login = codex.login_chatgpt()
@@ -55,7 +55,7 @@ with Codex() as codex:
 ## 3. Run A Turn
 
 ```python
-from openai_codex import Codex, Sandbox
+from tokencode_sdk import Codex, Sandbox
 
 with Codex() as codex:
     thread = codex.thread_start(sandbox=Sandbox.workspace_write)
@@ -77,7 +77,7 @@ or interrupting an active turn.
 Use one enum for the initial thread and later turn overrides:
 
 ```python
-from openai_codex import Codex, Sandbox
+from tokencode_sdk import Codex, Sandbox
 
 with Codex() as codex:
     thread = codex.thread_start(sandbox=Sandbox.workspace_write)
@@ -98,7 +98,7 @@ also applies to subsequent turns on that thread.
 ## 5. Continue A Thread
 
 ```python
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex() as codex:
     thread = codex.thread_start()
@@ -120,7 +120,7 @@ with Codex() as codex:
 ```python
 import asyncio
 
-from openai_codex import AsyncCodex, Sandbox
+from tokencode_sdk import AsyncCodex, Sandbox
 
 
 async def main() -> None:
@@ -138,16 +138,16 @@ asyncio.run(main())
 Python's built-in documentation tools cover the curated SDK surface:
 
 ```python
-import openai_codex
-from openai_codex import Codex, CodexConfig
+import tokencode_sdk
+from tokencode_sdk import Codex, CodexConfig
 
-help(openai_codex)
+help(tokencode_sdk)
 help(Codex)
 help(CodexConfig)
 ```
 
 ```bash
-python -m pydoc openai_codex
+python -m pydoc tokencode_sdk
 ```
 
 ## Developing From This Repository
@@ -163,6 +163,6 @@ source .venv/bin/activate
 
 ## Next Stops
 
-- [API reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md)
-- [FAQ](https://github.com/openai/codex/blob/main/sdk/python/docs/faq.md)
-- [Runnable examples](https://github.com/openai/codex/blob/main/sdk/python/examples/README.md)
+- [API reference](https://github.com/miuiadmin/tokencode/blob/main/sdk/python/docs/api-reference.md)
+- [FAQ](https://github.com/miuiadmin/tokencode/blob/main/sdk/python/docs/faq.md)
+- [Runnable examples](https://github.com/miuiadmin/tokencode/blob/main/sdk/python/examples/README.md)

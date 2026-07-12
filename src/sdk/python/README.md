@@ -8,7 +8,7 @@ and control workspace access.
 Install the SDK:
 
 ```bash
-pip install openai-codex
+pip install tokencode-sdk
 ```
 
 ## Quickstart
@@ -17,7 +17,7 @@ The SDK reuses your existing TokenCode authentication when one is already
 available:
 
 ```python
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex() as codex:
     thread = codex.thread_start()
@@ -34,7 +34,7 @@ Existing TokenCode authentication is reused automatically. To start ChatGPT
 browser login explicitly:
 
 ```python
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex() as codex:
     login = codex.login_chatgpt()
@@ -60,8 +60,8 @@ with Codex() as codex:
 
 ## Built-In Help
 
-Use Python's standard `help(openai_codex)`, `help(Codex)`, or
-`python -m pydoc openai_codex` documentation tools.
+Use Python's standard `help(tokencode_sdk)`, `help(Codex)`, or
+`python -m pydoc tokencode_sdk` documentation tools.
 
 ## Documentation
 

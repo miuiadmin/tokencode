@@ -11,11 +11,11 @@ ensure_local_sdk_src()
 
 import asyncio
 
-from openai_codex import (
+from tokencode_sdk import (
     AsyncCodex,
     Sandbox,
 )
-from openai_codex.types import (
+from tokencode_sdk.types import (
     Personality,
     ReasoningEffort,
     ReasoningSummary,

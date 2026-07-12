@@ -5,8 +5,8 @@ Each example folder contains runnable versions:
 - `sync.py` (public sync surface: `Codex`)
 - `async.py` (public async surface: `AsyncCodex`)
 
-All examples intentionally use only public SDK exports from `openai_codex`
-and `openai_codex.types`.
+All examples intentionally use only public SDK exports from `tokencode_sdk`
+and `tokencode_sdk.types`.
 
 Examples use plain strings for text-only turns and typed input objects for
 multimodal or structured input lists.
@@ -19,10 +19,10 @@ multimodal or structured input lists.
 Install the published beta:
 
 ```bash
-python -m pip install openai-codex
+python -m pip install tokencode-sdk
 ```
 
-The SDK installs its pinned `openai-codex-cli-bin` runtime dependency.
+The SDK installs its pinned `tokencode-cli-bin` runtime dependency.
 The pinned runtime version comes from the SDK package dependency.
 
 ## Run From A Checkout

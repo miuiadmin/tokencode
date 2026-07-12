@@ -11,7 +11,7 @@ ensure_local_sdk_src()
 
 import asyncio
 
-from openai_codex import AsyncCodex, ImageInput, TextInput
+from tokencode_sdk import AsyncCodex, ImageInput, TextInput
 
 IMAGE_DATA_URL = generated_sample_image_data_url()
 

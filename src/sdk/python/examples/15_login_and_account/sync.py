@@ -9,7 +9,7 @@ from _bootstrap import ensure_local_sdk_src, runtime_config
 
 ensure_local_sdk_src()
 
-from openai_codex import Codex
+from tokencode_sdk import Codex
 
 with Codex(config=runtime_config()) as codex:
     # Browser login returns a live handle. Open `auth_url` and call `wait()`

@@ -5,7 +5,7 @@ import asyncio
 from app_server_harness import AppServerHarness
 from app_server_helpers import request_kind
 
-from openai_codex import AsyncCodex, Codex
+from tokencode_sdk import AsyncCodex, Codex
 
 
 def _thread_message_summary(read_response) -> list[tuple[str, str]]:

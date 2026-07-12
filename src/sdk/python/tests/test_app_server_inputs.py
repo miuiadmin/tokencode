@@ -5,7 +5,7 @@ import base64
 from app_server_harness import AppServerHarness
 from app_server_helpers import TINY_PNG_BYTES
 
-from openai_codex import Codex, ImageInput, LocalImageInput, SkillInput, TextInput
+from tokencode_sdk import Codex, ImageInput, LocalImageInput, SkillInput, TextInput
 
 
 def test_data_url_image_input_reaches_responses_api(

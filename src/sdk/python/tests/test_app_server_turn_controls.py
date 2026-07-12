@@ -3,8 +3,8 @@ from __future__ import annotations
 from app_server_harness import AppServerHarness
 from app_server_helpers import agent_message_texts, streaming_response
 
-from openai_codex import Codex
-from openai_codex.generated.v2_all import TurnStatus
+from tokencode_sdk import Codex
+from tokencode_sdk.generated.v2_all import TurnStatus
 
 
 def test_turn_steer_adds_follow_up_input(tmp_path) -> None:
