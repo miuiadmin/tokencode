@@ -3410,10 +3410,18 @@ impl Config {
         // provider 优先级：显式 model_provider（CLI/config） > 按 model slug 推导
         // （内置 models.json 中该模型声明的 provider_id） > 默认 openai。
         // 最后一档让 `model = "glm-5.2"` 这类无显式 provider 的配置在加载期就绑定到
-        // 对应厂商，避免启动登录流程 / session_log / 重启持久化读到错的 provider。
+        // 对应厂商，避免启动登录流程 / session_log 读到错的 provider。
+        //
+        // 此处只在加载期「派生」一次会话初始 provider；运行中切模型时由 turn 级 resolver
+        // （`model_provider_resolver`）另行解析。两条路径对「模型声明了一个已删除的 provider_id」
+        // 的处置严格度有意不同：加载期 fail-fast（尽早暴露坏配置），运行期 resolver 回落默认
+        // （不因切模型把会话打挂）——非对称是设计取舍，非疏漏。又：无 provider_id 的模型在
+        // 会话内继承的 provider 是运行期活值，重启后这里按配置重新派生（对内置模型通常即回到
+        // 其厂商默认，属预期语义），故不另作持久化。
+        let effective_model = model.as_deref().or(cfg.model.as_deref());
         let model_provider_id = model_provider
             .or(cfg.model_provider)
-            .or_else(|| model.as_deref().or(cfg.model.as_deref()).and_then(provider_id_for_model))
+            .or_else(|| effective_model.and_then(provider_id_for_model))
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
@@ -3421,7 +3429,18 @@ impl Config {
                 let message = if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
                     OLLAMA_CHAT_PROVIDER_REMOVED_ERROR.to_string()
                 } else {
-                    format!("Model provider `{model_provider_id}` not found")
+                    // 点明 provider_id 来源：若是按 model slug 派生（该模型声明了一个未配置的
+                    // provider_id），把 model 一起报出，便于定位是哪个模型的声明配错。
+                    let declared_by_model = effective_model
+                        .and_then(provider_id_for_model)
+                        .as_deref()
+                        == Some(model_provider_id.as_str());
+                    match (effective_model, declared_by_model) {
+                        (Some(slug), true) => format!(
+                            "Model provider `{model_provider_id}` not found (declared by model `{slug}`)"
+                        ),
+                        _ => format!("Model provider `{model_provider_id}` not found"),
+                    }
                 };
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
