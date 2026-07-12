@@ -41,7 +41,7 @@ pub struct ResponseMock {
 }
 
 impl ResponseMock {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
         }

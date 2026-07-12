@@ -25,6 +25,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod apps_test_server;
+pub mod anthropic_fixtures;
+pub mod chat_fixtures;
 pub mod context_snapshot;
 pub mod hooks;
 pub mod process;
