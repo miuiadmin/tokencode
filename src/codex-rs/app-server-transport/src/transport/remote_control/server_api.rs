@@ -9,7 +9,7 @@ use super::protocol::RefreshRemoteServerRequest;
 use super::protocol::RemoteControlTarget;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use rand::Rng;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

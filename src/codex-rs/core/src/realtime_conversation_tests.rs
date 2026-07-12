@@ -182,7 +182,7 @@ fn omits_quicksilver_alpha_header_for_realtime_v2() {
 
 #[test]
 fn realtime_headers_include_only_non_default_originator() {
-    let default_originator = codex_login::default_client::originator();
+    let default_originator = codex_default_client::originator();
     for (originator, expected_header) in [
         ("codex_work_desktop", Some("codex_work_desktop")),
         (default_originator.value.as_str(), None),

@@ -12,7 +12,7 @@ use codex_app_server_protocol::RemoteControlClientsListResponse;
 use codex_app_server_protocol::RemoteControlClientsRevokeParams;
 use codex_app_server_protocol::RemoteControlClientsRevokeResponse;
 use codex_login::AuthManager;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use serde::Deserialize;
 use std::io;
 use std::io::ErrorKind;

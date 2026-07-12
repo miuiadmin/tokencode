@@ -848,7 +848,7 @@ impl App {
             /*account_id*/ None,
             bootstrap.account_email.clone(),
             auth_mode,
-            codex_login::default_client::originator().value,
+            codex_default_client::originator().value,
             config.otel.log_user_prompt,
             user_agent(),
             serde_json::from_value(serde_json::json!("cli"))

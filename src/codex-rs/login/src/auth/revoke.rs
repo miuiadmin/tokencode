@@ -16,8 +16,8 @@ use super::manager::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
 use super::manager::oauth_client_id;
 use super::storage::AuthDotJson;
 use super::util::try_parse_error_message;
-use crate::default_client::create_default_auth_client;
-use crate::outbound_proxy::AuthRouteConfig;
+use codex_default_client::create_default_auth_client;
+use codex_default_client::AuthRouteConfig;
 use crate::token_data::TokenData;
 
 const REVOKE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);

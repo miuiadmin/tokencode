@@ -9,7 +9,7 @@ use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginInterface;
 use codex_app_server_protocol::SkillInterface;
 use codex_login::CodexAuth;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use codex_plugin::AppConnectorId;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginCapabilitySummary;

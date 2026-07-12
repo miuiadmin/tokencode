@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use codex_login::CodexAuth;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 
 const REMOTE_SKILLS_API_TIMEOUT: Duration = Duration::from_secs(30);
 

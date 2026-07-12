@@ -5,7 +5,7 @@ use codex_config::types::WindowsSandboxModeToml;
 use codex_features::Feature;
 use codex_features::Features;
 use codex_features::FeaturesToml;
-use codex_login::default_client::originator;
+use codex_default_client::originator;
 use codex_otel::sanitize_metric_tag_value;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;

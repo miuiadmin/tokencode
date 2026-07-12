@@ -13,6 +13,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-default-client = { workspace = true }
 anyhow = { workspace = true }
 codex-login = { workspace = true }
 codex-mcp-server = { workspace = true }

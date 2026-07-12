@@ -8,6 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+codex-default-client = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 codex-connectors = { workspace = true }

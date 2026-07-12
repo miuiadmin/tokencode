@@ -3,7 +3,6 @@ pub mod auth_env_telemetry;
 pub mod token_data;
 
 mod device_code_auth;
-mod outbound_proxy;
 mod pkce;
 mod server;
 
@@ -40,7 +39,6 @@ pub use auth::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 pub use auth::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
 pub use auth::RefreshTokenError;
 pub use auth::UnauthorizedRecovery;
-pub use auth::default_client;
 pub use auth::enforce_login_restrictions;
 pub use auth::load_auth_dot_json;
 pub use auth::login_with_access_token;
@@ -54,5 +52,4 @@ pub use auth::read_openai_api_key_from_env;
 pub use auth::save_auth;
 pub use auth_env_telemetry::AuthEnvTelemetry;
 pub use auth_env_telemetry::collect_auth_env_telemetry;
-pub use outbound_proxy::AuthRouteConfig;
 pub use token_data::TokenData;

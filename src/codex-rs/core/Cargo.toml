@@ -16,6 +16,7 @@ path = "src/bin/config_schema.rs"
 workspace = true
 
 [dependencies]
+codex-default-client = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 async-channel = { workspace = true }

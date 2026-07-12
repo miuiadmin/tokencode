@@ -1,7 +1,6 @@
 mod access_token;
 mod agent_identity;
 mod bedrock_api_key;
-pub mod default_client;
 pub mod error;
 mod personal_access_token;
 mod storage;

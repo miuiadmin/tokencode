@@ -517,7 +517,7 @@ async fn run_remote_plugin_install_metadata_case() -> Result<()> {
                 "thread_id": thread_id,
                 "turn_id": turn_id,
                 "model_slug": "gpt-5.4",
-                "product_client_id": codex_login::default_client::originator().value,
+                "product_client_id": codex_default_client::originator().value,
             }
         })
     );

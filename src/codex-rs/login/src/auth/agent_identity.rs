@@ -18,8 +18,8 @@ use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::protocol::SessionSource;
 use thiserror::Error;
 
-use crate::default_client::build_default_auth_reqwest_client;
-use crate::outbound_proxy::AuthRouteConfig;
+use codex_default_client::build_default_auth_reqwest_client;
+use codex_default_client::AuthRouteConfig;
 
 use super::storage::AgentIdentityAuthRecord;
 

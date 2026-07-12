@@ -26,7 +26,7 @@ use crate::facts::TurnSubmissionType;
 use crate::now_unix_millis;
 use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::CommandExecutionSource;
-use codex_login::default_client::originator;
+use codex_default_client::originator;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::approvals::NetworkApprovalProtocol;

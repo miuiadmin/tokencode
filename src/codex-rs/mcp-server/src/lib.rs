@@ -10,7 +10,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::resolve_installation_id;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
-use codex_login::default_client::set_default_client_residency_requirement;
+use codex_default_client::set_default_client_residency_requirement;
 use codex_utils_cli::CliConfigOverrides;
 
 use rmcp::model::ClientNotification;

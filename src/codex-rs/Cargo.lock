@@ -402,6 +402,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-exec-server",
  "codex-features",
  "codex-login",
@@ -1900,6 +1901,7 @@ name = "codex-analytics"
 version = "0.143.0-alpha.36"
 dependencies = [
  "codex-app-server-protocol",
+ "codex-default-client",
  "codex-git-utils",
  "codex-login",
  "codex-model-provider",
@@ -1980,6 +1982,7 @@ dependencies = [
  "codex-connectors",
  "codex-core",
  "codex-core-plugins",
+ "codex-default-client",
  "codex-exec-server",
  "codex-extension-api",
  "codex-external-agent-migration",
@@ -2163,6 +2166,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-login",
  "codex-model-provider",
  "codex-protocol",
@@ -2264,6 +2268,7 @@ dependencies = [
  "codex-api",
  "codex-backend-openapi-models",
  "codex-client",
+ "codex-default-client",
  "codex-login",
  "codex-model-provider",
  "codex-protocol",
@@ -2299,6 +2304,7 @@ dependencies = [
  "clap",
  "codex-connectors",
  "codex-core",
+ "codex-default-client",
  "codex-git-utils",
  "codex-login",
  "codex-model-provider",
@@ -2333,6 +2339,7 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-core-plugins",
+ "codex-default-client",
  "codex-exec",
  "codex-exec-server",
  "codex-execpolicy",
@@ -2432,6 +2439,7 @@ dependencies = [
  "codex-backend-client",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-login",
  "codex-otel",
  "codex-protocol",
@@ -2457,6 +2465,7 @@ dependencies = [
  "codex-cloud-tasks-client",
  "codex-cloud-tasks-mock-client",
  "codex-core",
+ "codex-default-client",
  "codex-git-utils",
  "codex-login",
  "codex-model-provider",
@@ -2658,6 +2667,7 @@ dependencies = [
  "codex-context-fragments",
  "codex-core-plugins",
  "codex-core-skills",
+ "codex-default-client",
  "codex-exec-server",
  "codex-execpolicy",
  "codex-extension-api",
@@ -2768,6 +2778,7 @@ dependencies = [
  "codex-arg0",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-exec-server",
  "codex-extension-api",
  "codex-features",
@@ -2790,6 +2801,7 @@ dependencies = [
  "codex-config",
  "codex-connectors",
  "codex-core-skills",
+ "codex-default-client",
  "codex-exec-server",
  "codex-git-utils",
  "codex-hooks",
@@ -2834,6 +2846,7 @@ dependencies = [
  "codex-analytics",
  "codex-config",
  "codex-context-fragments",
+ "codex-default-client",
  "codex-exec-server",
  "codex-login",
  "codex-model-provider",
@@ -2861,6 +2874,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-default-client"
+version = "0.143.0-alpha.36"
+dependencies = [
+ "codex-client",
+ "codex-config",
+ "codex-terminal-detection",
+ "core_test_support",
+ "os_info",
+ "pretty_assertions",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "codex-exec"
 version = "0.143.0-alpha.36"
 dependencies = [
@@ -2874,6 +2904,7 @@ dependencies = [
  "codex-cloud-config",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-feedback",
  "codex-git-utils",
  "codex-login",
@@ -3222,6 +3253,7 @@ dependencies = [
  "base64 0.22.1",
  "codex-api",
  "codex-core",
+ "codex-default-client",
  "codex-exec-server",
  "codex-extension-api",
  "codex-login",
@@ -3321,6 +3353,7 @@ dependencies = [
  "codex-agent-identity",
  "codex-client",
  "codex-config",
+ "codex-default-client",
  "codex-keyring-store",
  "codex-model-provider-info",
  "codex-otel",
@@ -3420,6 +3453,7 @@ dependencies = [
  "codex-arg0",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-exec-server",
  "codex-extension-api",
  "codex-home",
@@ -3485,6 +3519,7 @@ dependencies = [
  "codex-backend-client",
  "codex-config",
  "codex-core",
+ "codex-default-client",
  "codex-features",
  "codex-git-utils",
  "codex-login",
@@ -3535,6 +3570,7 @@ dependencies = [
  "codex-api",
  "codex-aws-auth",
  "codex-client",
+ "codex-default-client",
  "codex-feedback",
  "codex-login",
  "codex-model-provider-info",
@@ -4113,6 +4149,7 @@ dependencies = [
  "codex-connectors",
  "codex-core-plugins",
  "codex-core-skills",
+ "codex-default-client",
  "codex-exec-server",
  "codex-features",
  "codex-feedback",
@@ -4455,6 +4492,7 @@ version = "0.143.0-alpha.36"
 dependencies = [
  "codex-api",
  "codex-core",
+ "codex-default-client",
  "codex-extension-api",
  "codex-login",
  "codex-model-provider",
@@ -9116,6 +9154,7 @@ name = "mcp_test_support"
 version = "0.143.0-alpha.36"
 dependencies = [
  "anyhow",
+ "codex-default-client",
  "codex-login",
  "codex-mcp-server",
  "codex-terminal-detection",

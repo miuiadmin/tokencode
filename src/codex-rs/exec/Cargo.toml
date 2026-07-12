@@ -22,6 +22,7 @@ path = "tests/all.rs"
 workspace = true
 
 [dependencies]
+codex-default-client = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 codex-arg0 = { workspace = true }

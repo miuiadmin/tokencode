@@ -5,7 +5,7 @@ use crate::store::PluginInstallResult;
 use crate::store::PluginStore;
 use crate::store::PluginStoreError;
 use crate::store::validate_plugin_version_segment;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use codex_plugin::PluginId;
 use codex_plugin::PluginIdError;
 use codex_utils_absolute_path::AbsolutePathBuf;

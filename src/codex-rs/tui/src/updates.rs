@@ -13,7 +13,7 @@ use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
 use chrono::Duration;
 use chrono::Utc;
-use codex_login::default_client::create_client;
+use codex_default_client::create_client;
 use serde::Deserialize;
 use std::path::Path;
 

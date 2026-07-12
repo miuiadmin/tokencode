@@ -7,7 +7,7 @@ use super::protocol::StartRemoteControlPairingResponse;
 use axum::http::HeaderMap;
 use codex_app_server_protocol::RemoteControlPairingStartResponse;
 use codex_app_server_protocol::RemoteControlPairingStatusResponse;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use codex_state::RemoteControlEnrollmentRecord;
 use codex_state::StateRuntime;
 use std::io;

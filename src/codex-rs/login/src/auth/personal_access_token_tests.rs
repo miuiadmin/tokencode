@@ -1,5 +1,5 @@
 use super::*;
-use crate::default_client::create_client;
+use codex_default_client::create_client;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use wiremock::Mock;

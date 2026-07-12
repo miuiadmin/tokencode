@@ -10,7 +10,7 @@
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
 use codex_login::AuthKeyringBackendKind;
-use codex_login::AuthRouteConfig;
+use codex_default_client::AuthRouteConfig;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
 use codex_login::ServerOptions;

@@ -1,6 +1,6 @@
 use codex_core::config::Config;
 use codex_login::AuthManager;
-use codex_login::default_client::create_client;
+use codex_default_client::create_client;
 
 use anyhow::Context;
 use serde::de::DeserializeOwned;

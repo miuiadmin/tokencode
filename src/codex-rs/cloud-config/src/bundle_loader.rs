@@ -7,7 +7,7 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
-use codex_login::AuthRouteConfig;
+use codex_default_client::AuthRouteConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;

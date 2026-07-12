@@ -1,14 +1,14 @@
 //! Default TokenCode HTTP client: shared `User-Agent`, `originator`, optional residency header, and
 //! reqwest/`CodexHttpClient` construction.
 //!
-//! Use [`crate::default_client`] or [`codex_login::default_client`] from other crates in this
-//! workspace.
+//! Use [`codex_default_client`] from other crates in this workspace.
 
 use codex_client::BuildCustomCaTransportError;
 use codex_client::BuildRouteAwareHttpClientError;
 use codex_client::ClientRouteClass;
 use codex_client::CodexHttpClient;
 pub use codex_client::CodexRequestBuilder;
+use codex_client::OutboundProxyConfig;
 use codex_client::build_reqwest_client_for_route;
 use codex_client::build_reqwest_client_with_custom_ca;
 use codex_client::with_chatgpt_cloudflare_cookie_store;
@@ -20,7 +20,26 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::RwLock;
 
-use crate::outbound_proxy::AuthRouteConfig;
+/// Auth-layer adapter around client-owned proxy policy.
+///
+/// `AuthConfig` carries this value while endpoint resolution and platform details remain in the
+/// client layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthRouteConfig {
+    route_config: OutboundProxyConfig,
+}
+
+impl AuthRouteConfig {
+    pub fn respect_system_proxy() -> Self {
+        Self {
+            route_config: OutboundProxyConfig::respect_system_proxy(),
+        }
+    }
+
+    pub(crate) fn route_config(&self) -> &OutboundProxyConfig {
+        &self.route_config
+    }
+}
 
 /// Set this to add a suffix to the User-Agent string.
 ///
@@ -33,7 +52,7 @@ use crate::outbound_proxy::AuthRouteConfig;
 /// Finally, we want to make sure this is set for ALL mcp clients without needing to know a special env var
 /// or having to set data that they already specified in the mcp initialize request somewhere else.
 ///
-/// A space is automatically added between the suffix and the rest of the User-Agent string.
+/// A space is automatically made between the suffix and the rest of the User-Agent string.
 /// The full user agent string is returned from the mcp initialize response.
 /// Parenthesis will be added by TokenCode. This should only specify what goes inside of the parenthesis.
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
@@ -243,7 +262,7 @@ fn default_reqwest_client_builder() -> reqwest::ClientBuilder {
 }
 
 /// Builds a raw reqwest client for an auth endpoint without TokenCode default headers.
-pub(crate) fn build_raw_auth_reqwest_client(
+pub fn build_raw_auth_reqwest_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,
 ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
@@ -256,7 +275,7 @@ pub(crate) fn build_raw_auth_reqwest_client(
 }
 
 /// Builds the default TokenCode reqwest client for an auth endpoint.
-pub(crate) fn build_default_auth_reqwest_client(
+pub fn build_default_auth_reqwest_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,
 ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
@@ -278,7 +297,7 @@ pub(crate) fn build_default_auth_reqwest_client(
 }
 
 /// Builds the default TokenCode HTTP client wrapper for an auth endpoint.
-pub(crate) fn create_default_auth_client(
+pub fn create_default_auth_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,
 ) -> Result<CodexHttpClient, BuildRouteAwareHttpClientError> {

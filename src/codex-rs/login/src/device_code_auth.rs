@@ -6,7 +6,7 @@ use serde::de::{self};
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::default_client::build_raw_auth_reqwest_client;
+use codex_default_client::build_raw_auth_reqwest_client;
 use crate::pkce::PkceCodes;
 use crate::server::ServerOptions;
 use std::io;

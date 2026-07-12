@@ -2,7 +2,7 @@ use crate::config::Config;
 use codex_config::types::OtelExporterKind as Kind;
 use codex_config::types::OtelHttpProtocol as Protocol;
 use codex_features::Feature;
-use codex_login::default_client::originator;
+use codex_default_client::originator;
 use codex_otel::OtelExporter;
 use codex_otel::OtelHttpProtocol;
 use codex_otel::OtelProvider;

@@ -73,7 +73,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
-use codex_login::default_client::build_reqwest_client;
+use codex_default_client::build_reqwest_client;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
@@ -1011,7 +1011,7 @@ impl ModelClient {
             websocket_connect_timeout,
             ApiWebSocketResponsesClient::new(api_provider, api_auth).connect(
                 headers,
-                codex_login::default_client::default_headers(),
+                codex_default_client::default_headers(),
                 /*turn_state*/ None,
                 Some(websocket_telemetry),
             ),
@@ -2112,7 +2112,7 @@ fn build_responses_headers(
 }
 
 pub(crate) fn add_originator_header(headers: &mut ApiHeaderMap, originator: &str) {
-    let default_originator = codex_login::default_client::originator();
+    let default_originator = codex_default_client::originator();
     if originator == default_originator.value.as_str() {
         return;
     }
