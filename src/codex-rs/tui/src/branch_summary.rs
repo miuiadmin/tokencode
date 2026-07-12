@@ -573,7 +573,7 @@ mod tests {
         let runner = FakeRunner::new(vec![response(
             &["gh", "pr", "view", "--json", "number,url,state"],
             /*exit_code*/ 0,
-            r#"{"number":20252,"url":"https://github.com/openai/codex/pull/20252","state":"OPEN"}"#,
+            r#"{"number":20252,"url":"https://github.com/miuiadmin/tokencode/pull/20252","state":"OPEN"}"#,
         )]);
 
         let pull_request = open_pull_request(&runner, Path::new("/repo"))
@@ -584,7 +584,7 @@ mod tests {
             pull_request,
             StatusLinePullRequest {
                 number: 20_252,
-                url: "https://github.com/openai/codex/pull/20252".to_string(),
+                url: "https://github.com/miuiadmin/tokencode/pull/20252".to_string(),
             }
         );
         assert!(!runner.saw(&["git", "rev-parse", "HEAD"]));
@@ -606,7 +606,7 @@ mod tests {
             response(
                 &["gh", "repo", "view", "--json", "nameWithOwner,parent"],
                 /*exit_code*/ 0,
-                r#"{"nameWithOwner":"fcoury/codex","parent":{"nameWithOwner":"openai/codex"}}"#,
+                r#"{"nameWithOwner":"fcoury/tokencode","parent":{"nameWithOwner":"miuiadmin/tokencode"}}"#,
             ),
             response(
                 &[
@@ -614,10 +614,10 @@ mod tests {
                     "api",
                     "-H",
                     "Accept: application/vnd.github+json",
-                    "repos/openai/codex/commits/head-sha/pulls",
+                    "repos/miuiadmin/tokencode/commits/head-sha/pulls",
                 ],
                 /*exit_code*/ 0,
-                r#"[{"number":20252,"html_url":"https://github.com/openai/codex/pull/20252","state":"open"}]"#,
+                r#"[{"number":20252,"html_url":"https://github.com/miuiadmin/tokencode/pull/20252","state":"open"}]"#,
             ),
         ]);
 
@@ -629,7 +629,7 @@ mod tests {
             pull_request,
             StatusLinePullRequest {
                 number: 20_252,
-                url: "https://github.com/openai/codex/pull/20252".to_string(),
+                url: "https://github.com/miuiadmin/tokencode/pull/20252".to_string(),
             }
         );
         assert!(runner.saw(&[
@@ -637,7 +637,7 @@ mod tests {
             "api",
             "-H",
             "Accept: application/vnd.github+json",
-            "repos/openai/codex/commits/head-sha/pulls",
+            "repos/miuiadmin/tokencode/commits/head-sha/pulls",
         ]));
     }
 
@@ -645,17 +645,17 @@ mod tests {
     fn status_line_pr_view_parser_requires_open_pr() {
         assert_eq!(
             pull_request_from_view_output(
-                r#"{"number":20252,"url":"https://github.com/openai/codex/pull/20252","state":"OPEN"}"#
+                r#"{"number":20252,"url":"https://github.com/miuiadmin/tokencode/pull/20252","state":"OPEN"}"#
             ),
             Some(StatusLinePullRequest {
                 number: 20_252,
-                url: "https://github.com/openai/codex/pull/20252".to_string(),
+                url: "https://github.com/miuiadmin/tokencode/pull/20252".to_string(),
             })
         );
 
         assert_eq!(
             pull_request_from_view_output(
-                r#"{"number":20252,"url":"https://github.com/openai/codex/pull/20252","state":"MERGED"}"#
+                r#"{"number":20252,"url":"https://github.com/miuiadmin/tokencode/pull/20252","state":"MERGED"}"#
             ),
             None
         );
@@ -665,9 +665,9 @@ mod tests {
     fn status_line_pr_fallback_searches_parent_repo_first() {
         assert_eq!(
             repo_search_order_from_output(
-                r#"{"nameWithOwner":"fcoury/codex","parent":{"nameWithOwner":"openai/codex"}}"#
+                r#"{"nameWithOwner":"fcoury/tokencode","parent":{"nameWithOwner":"miuiadmin/tokencode"}}"#
             ),
-            Some(vec!["openai/codex".to_string(), "fcoury/codex".to_string()])
+            Some(vec!["miuiadmin/tokencode".to_string(), "fcoury/tokencode".to_string()])
         );
     }
 

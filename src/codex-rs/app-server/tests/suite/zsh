@@ -12,8 +12,7 @@
 {
   "name": "codex-zsh",
   "platforms": {
-    // macOS 13 builds (and therefore x86_64) were dropped in
-    // https://github.com/openai/codex/pull/7295, so we only provide an
+    // macOS 13 builds (and therefore x86_64) were dropped, so we only provide an
     // Apple Silicon build for now.
     "macos-aarch64": {
       "size": 53771483,
