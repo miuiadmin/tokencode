@@ -64,7 +64,8 @@ pub const GLM_DEFAULT_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
 const MINIMAX_PROVIDER_NAME: &str = "MiniMax";
 pub const MINIMAX_PROVIDER_ID: &str = "minimax";
-pub const MINIMAX_DEFAULT_BASE_URL: &str = "https://api.minimax.chat/v1";
+// 国内门户（platform.minimaxi.com）的 OpenAI 兼容端点；面向国际可改 api.minimax.io/v1。
+pub const MINIMAX_DEFAULT_BASE_URL: &str = "https://api.minimaxi.com/v1";
 
 const MOONSHOT_PROVIDER_NAME: &str = "Moonshot Kimi";
 pub const MOONSHOT_PROVIDER_ID: &str = "moonshot";

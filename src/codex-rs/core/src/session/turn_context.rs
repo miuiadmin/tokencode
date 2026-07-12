@@ -434,6 +434,11 @@ impl Session {
         per_turn_config.model_reasoning_effort =
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
+        // 同步会话级 provider id：make_turn_context / with_model 都以
+        // per_turn_config.model_provider_id 作 resolver 回落默认。若不同步，切到无
+        // provider_id 的模型时会回落到 original_config 的启动冻结值，导致 turn 级与
+        // session 级 provider 分裂（session 报 glm/Chat，turn 实发 openai/Responses）。
+        per_turn_config.model_provider_id = session_configuration.model_provider_id.clone();
         per_turn_config.service_tier = session_configuration.service_tier.clone();
         per_turn_config.personality = session_configuration.personality;
         per_turn_config.approvals_reviewer = session_configuration.approvals_reviewer;

@@ -6779,6 +6779,18 @@ async fn thread_settings_legacy_model_inherits_current_session_provider() {
         state.session_configuration.provider.wire_api,
         codex_model_provider_info::WireApi::Chat
     );
+
+    // 回归 build_per_turn_config：per-turn 配置必须携带会话活值 provider id。
+    // make_turn_context / with_model 以 per_turn_config.model_provider_id 作 resolver
+    // 回落默认；若仍是启动冻结值 openai，turn 级会实发 openai/Responses 而 session 级报 glm。
+    let per_turn_config = Session::build_per_turn_config(
+        &state.session_configuration,
+        state.session_configuration.cwd().clone(),
+    );
+    assert_eq!(
+        per_turn_config.model_provider_id, "glm",
+        "per_turn_config 应同步会话活值 provider(glm)，而非启动冻结 openai"
+    );
 }
 
 #[tokio::test]
