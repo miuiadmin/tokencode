@@ -5,6 +5,7 @@ use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
+use crate::model_provider_resolver::resolve_provider_for_model;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -247,6 +248,13 @@ impl TurnContext {
             .list_models(RefreshStrategy::OnlineIfUncached)
             .await;
 
+        // provider 跟随 model：按新 model_info 的 provider_id 重新解析 provider，
+        // 未声明或未命中时回落到会话默认 provider（config.model_provider_id）。
+        let provider = create_model_provider(
+            resolve_provider_for_model(&model_info, &config.model_providers, &config.model_provider_id),
+            self.auth_manager.clone(),
+        );
+
         Self {
             sub_id: self.sub_id.clone(),
             trace_id: self.trace_id.clone(),
@@ -258,7 +266,7 @@ impl TurnContext {
                 .session_telemetry
                 .clone()
                 .with_model(model.as_str(), model_info.slug.as_str()),
-            provider: self.provider.clone(),
+            provider,
             reasoning_effort,
             reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
@@ -739,7 +747,11 @@ impl Session {
             self.session_id(),
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.session_telemetry,
-            session_configuration.provider.clone(),
+            resolve_provider_for_model(
+                &model_info,
+                &per_turn_config.model_providers,
+                &per_turn_config.model_provider_id,
+            ),
             &session_configuration,
             multi_agent_version,
             self.services.user_shell.as_ref(),

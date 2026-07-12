@@ -266,7 +266,11 @@ async fn run_remote_compact_task_inner_impl(
     let client_session = match client_session {
         Some(client_session) => client_session,
         None => {
-            owned_client_session = sess.services.model_client.new_session();
+            owned_client_session = sess
+                .services
+                .model_client
+                .new_session()
+                .with_provider(turn_context.provider.clone());
             &mut owned_client_session
         }
     };

@@ -1261,9 +1261,17 @@ impl Session {
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
         let state = self.state.lock().await;
-        BaseInstructions {
-            text: state.session_configuration.base_instructions.clone(),
-        }
+        // 模型未声明 base_instructions 时（如跨厂商直连的新模型），按 wire 协议回落到
+        // 通用 coding-agent 模板，保证无内置指令的模型也有一致的角色与工作约定。
+        let text = if state.session_configuration.base_instructions.is_empty() {
+            crate::model_instructions::base_instructions_for(
+                state.session_configuration.provider.wire_api,
+                state.session_configuration.collaboration_mode.model(),
+            )
+        } else {
+            state.session_configuration.base_instructions.clone()
+        };
+        BaseInstructions { text }
     }
 
     // Merges connector IDs into the session-level explicit connector selection.

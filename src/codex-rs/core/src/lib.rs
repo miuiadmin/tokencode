@@ -10,6 +10,7 @@ mod apps;
 mod client;
 mod client_common;
 mod model_provider_resolver;
+mod model_instructions;
 mod realtime_context;
 mod realtime_conversation;
 mod realtime_prompt;

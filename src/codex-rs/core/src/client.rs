@@ -273,6 +273,13 @@ pub struct ModelClient {
 /// contract and can cause routing bugs.
 pub struct ModelClientSession {
     client: ModelClient,
+    /// 该 turn 实际使用的 provider（turn 级，跟随 model 切换）。
+    ///
+    /// provider 选择跟随 model：切模型时由 [`ModelClientSession::with_provider`] 注入按
+    /// `ModelInfo.provider_id` 解析出的 provider。stream 路径读 turn 级 `self.provider`（而非
+    /// 会话默认的 `state.provider`），使 wire 协议与 base_url 随模型切换。默认
+    /// （prewarm / compact 等无 turn_context 的路径）复用会话默认 provider，行为与现状一致。
+    provider: SharedModelProvider,
     websocket_session: WebsocketSession,
     /// Turn state for sticky routing.
     ///
@@ -471,6 +478,7 @@ impl ModelClient {
     pub fn new_session(&self) -> ModelClientSession {
         ModelClientSession {
             client: self.clone(),
+            provider: self.state.provider.clone(),
             websocket_session: self.take_cached_websocket_session(),
             turn_state: Arc::new(OnceLock::new()),
         }
@@ -554,6 +562,7 @@ impl ModelClient {
         );
         let request = self.build_responses_request(
             &client_setup.api_provider,
+            self.state.provider.info(),
             prompt,
             model_info,
             settings.effort,
@@ -820,6 +829,7 @@ impl ModelClient {
     fn build_responses_request(
         &self,
         provider: &codex_api::Provider,
+        provider_info: &ModelProviderInfo,
         prompt: &Prompt,
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
@@ -828,7 +838,7 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
-        if !self.state.provider.info().is_openai() {
+        if !provider_info.is_openai() {
             input
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
@@ -909,11 +919,9 @@ impl ModelClient {
         }
     }
 
-    /// Returns whether the Responses-over-WebSocket transport is active for this session.
-    ///
-    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
-    pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
+    /// WebSocket 是否启用，按指定 provider 的能力判断（支持 turn 级 provider 解析）。
+    fn responses_websocket_enabled_with(&self, provider_info: &ModelProviderInfo) -> bool {
+        if !provider_info.supports_websockets
             || self.state.disable_websockets.load(Ordering::Relaxed)
         {
             return false;
@@ -922,16 +930,24 @@ impl ModelClient {
         true
     }
 
-    /// Returns auth + provider configuration resolved from the current session auth state.
+    /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// This centralizes setup used by both prewarm and normal request paths so they stay in
-    /// lockstep when auth/provider resolution changes.
-    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
-        let auth = self.state.provider.auth().await;
-        let api_provider = self.state.provider.api_provider().await?;
-        let resolved_auth = self
-            .state
-            .provider
+    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
+    pub fn responses_websocket_enabled(&self) -> bool {
+        self.responses_websocket_enabled_with(self.state.provider.info())
+    }
+
+    /// 按指定 provider 解析 auth + provider 配置（支持 turn 级 provider 解析）。
+    ///
+    /// `session_source` / `agent_identity_*` 仍取自会话 state（不随模型切换），
+    /// 只有 provider 相关部分用传入的 provider。
+    async fn current_client_setup_with(
+        &self,
+        provider: &SharedModelProvider,
+    ) -> Result<CurrentClientSetup> {
+        let auth = provider.auth().await;
+        let api_provider = provider.api_provider().await?;
+        let resolved_auth = provider
             .api_auth_for_scope(ProviderAuthScope {
                 agent_identity_policy: self.agent_identity_policy,
                 session_source: self.state.session_source.clone(),
@@ -944,6 +960,14 @@ impl ModelClient {
             api_auth: resolved_auth.auth,
             agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
         })
+    }
+
+    /// Returns auth + provider configuration resolved from the current session auth state.
+    ///
+    /// This centralizes setup used by both prewarm and normal request paths so they stay in
+    /// lockstep when auth/provider resolution changes.
+    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        self.current_client_setup_with(&self.state.provider).await
     }
 
     pub(crate) async fn prewarm_auth(&self) -> Result<()> {
@@ -1082,6 +1106,26 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    /// 用按模型解析出的 provider 覆盖会话默认 provider（turn 级注入）。
+    ///
+    /// 切模型时调用方依据 `ModelInfo.provider_id` 解析出 provider 传入，stream 路径
+    /// 读 `self.provider` 使 wire 协议与 base_url 随模型切换。
+    pub fn with_provider(mut self, provider: SharedModelProvider) -> Self {
+        self.provider = provider;
+        self
+    }
+
+    /// 该 turn 的 provider 是否启用 WebSocket（按 turn 级 provider 能力判断）。
+    fn responses_websocket_enabled(&self) -> bool {
+        self.client
+            .responses_websocket_enabled_with(self.provider.info())
+    }
+
+    /// 解析该 turn 的 auth + provider 配置（用 turn 级 provider）。
+    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        self.client.current_client_setup_with(&self.provider).await
+    }
+
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }
@@ -1230,14 +1274,14 @@ impl ModelClientSession {
         session_telemetry: &SessionTelemetry,
         responses_metadata: &CodexResponsesMetadata,
     ) -> std::result::Result<(), ApiError> {
-        if !self.client.responses_websocket_enabled() {
+        if !self.responses_websocket_enabled() {
             return Ok(());
         }
         if self.websocket_session.connection.is_some() {
             return Ok(());
         }
 
-        let client_setup = self.client.current_client_setup().await.map_err(|err| {
+        let client_setup = self.current_client_setup().await.map_err(|err| {
             ApiError::Stream(format!(
                 "failed to build websocket prewarm client setup: {err}"
             ))
@@ -1270,8 +1314,8 @@ impl ModelClientSession {
         level = "info",
         skip_all,
         fields(
-            provider = %self.client.state.provider.info().name,
-            wire_api = %self.client.state.provider.info().wire_api,
+            provider = %self.provider.info().name,
+            wire_api = %self.provider.info().wire_api,
             transport = "responses_websocket",
             api.path = "responses",
             turn.has_metadata_header = params.responses_metadata.has_turn_metadata()
@@ -1337,7 +1381,7 @@ impl ModelClientSession {
     fn responses_request_compression(&self, auth: Option<&CodexAuth>) -> Compression {
         if self.client.state.enable_request_compression
             && auth.is_some_and(CodexAuth::uses_codex_backend)
-            && self.client.state.provider.info().is_openai()
+            && self.provider.info().is_openai()
         {
             Compression::Zstd
         } else {
@@ -1355,7 +1399,7 @@ impl ModelClientSession {
         skip_all,
         fields(
             model = %model_info.slug,
-            wire_api = %self.client.state.provider.info().wire_api,
+            wire_api = %self.provider.info().wire_api,
             transport = "responses_http",
             http.method = "POST",
             api.path = "responses",
@@ -1496,13 +1540,13 @@ impl ModelClientSession {
             Option<Arc<dyn SseTelemetry>>,
         ) -> A,
     {
-        let auth_manager = self.client.state.provider.auth_manager();
+        let auth_manager = self.provider.auth_manager();
         let mut auth_recovery = auth_manager
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -1527,6 +1571,7 @@ impl ModelClientSession {
 
             let mut request = self.client.build_responses_request(
                 &client_setup.api_provider,
+                self.provider.info(),
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1562,7 +1607,7 @@ impl ModelClientSession {
                         stream,
                         request_session_telemetry,
                         inference_trace_attempt,
-                        Arc::clone(&self.client.state.provider),
+                        Arc::clone(&self.provider),
                     );
                     return Ok(stream);
                 }
@@ -1581,7 +1626,7 @@ impl ModelClientSession {
                             unauthorized_transport,
                             &mut auth_recovery,
                             session_telemetry,
-                            &self.client.state.provider,
+                            &self.provider,
                         )
                         .await?,
                     );
@@ -1590,7 +1635,7 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = self.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
@@ -1610,7 +1655,7 @@ impl ModelClientSession {
         skip_all,
         fields(
             model = %model_info.slug,
-            wire_api = %self.client.state.provider.info().wire_api,
+            wire_api = %self.provider.info().wire_api,
             transport = "responses_websocket",
             api.path = "responses",
             turn.has_metadata_header = responses_metadata.has_turn_metadata(),
@@ -1630,14 +1675,14 @@ impl ModelClientSession {
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<WebsocketStreamOutcome> {
-        let auth_manager = self.client.state.provider.auth_manager();
+        let auth_manager = self.provider.auth_manager();
 
         let mut auth_recovery = auth_manager
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self.current_client_setup().await?;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
@@ -1646,6 +1691,7 @@ impl ModelClientSession {
             );
             let request = self.client.build_responses_request(
                 &client_setup.api_provider,
+                self.provider.info(),
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1703,13 +1749,13 @@ impl ModelClientSession {
                             unauthorized_transport,
                             &mut auth_recovery,
                             session_telemetry,
-                            &self.client.state.provider,
+                            &self.provider,
                         )
                         .await?,
                     );
                     continue;
                 }
-                Err(err) => return Err(self.client.state.provider.map_api_error(err)),
+                Err(err) => return Err(self.provider.map_api_error(err)),
             }
 
             let (mut ws_request, previous_response_id_from_untraced_warmup) =
@@ -1738,7 +1784,7 @@ impl ModelClientSession {
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let websocket_connection =
                 self.websocket_session.connection.as_ref().ok_or_else(|| {
-                    self.client.state.provider.map_api_error(ApiError::Stream(
+                    self.provider.map_api_error(ApiError::Stream(
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
@@ -1752,7 +1798,7 @@ impl ModelClientSession {
                 .map_err(|err| {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
+                    let err = self.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
@@ -1766,7 +1812,7 @@ impl ModelClientSession {
                 codex_api::response_stream_to_unified(stream_result),
                 request_session_telemetry,
                 inference_trace_attempt,
-                Arc::clone(&self.client.state.provider),
+                Arc::clone(&self.provider),
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -1819,7 +1865,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<()> {
-        if !self.client.responses_websocket_enabled() {
+        if !self.responses_websocket_enabled() {
             return Ok(());
         }
         if self.websocket_session.last_request.is_some() {
@@ -1881,10 +1927,10 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let adapter_type = self.client.state.provider.info().adapter_type();
+        let adapter_type = self.provider.info().adapter_type();
         match adapter_type {
             AdapterType::OpenaiResponses => {
-                if self.client.responses_websocket_enabled() {
+                if self.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
                     match self
                         .stream_responses_websocket(
