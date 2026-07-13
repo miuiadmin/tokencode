@@ -572,7 +572,10 @@ pub fn merge_configured_model_providers(
                 }
             }
         } else {
-            model_providers.entry(key).or_insert(provider);
+            // 用户 provider 配置**覆盖**同名内置 provider（非 bedrock）：这让用户能用
+            // `[model_providers.glm]` 全量接管内置 glm（改 base_url / wire_api / env_key
+            // 等），而非被内置静默吞掉。bedrock 因只允许改 aws 子字段，走上面专用分支。
+            model_providers.insert(key, provider);
         }
     }
 

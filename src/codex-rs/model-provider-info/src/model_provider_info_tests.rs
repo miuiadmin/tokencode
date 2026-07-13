@@ -506,6 +506,38 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
 }
 
 #[test]
+fn test_merge_configured_model_providers_user_overrides_built_in_non_bedrock() {
+    // 用户用同名 key（如内置 anthropic）配置自定义 provider：merge 应取用户值，全量
+    // 覆盖内置——「用户 provider 覆盖内置」语义（非 bedrock 分支）。这让用户能用
+    // `[model_providers.anthropic]` 把内置 anthropic 改指自家网关，而非被静默吞掉。
+    let custom_anthropic = ModelProviderInfo {
+        name: "My Anthropic Gateway".to_string(),
+        base_url: Some("https://gw.example.com".to_string()),
+        wire_api: WireApi::Anthropic,
+        env_key: Some("MY_GW_KEY".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        ANTHROPIC_PROVIDER_ID.to_string(),
+        custom_anthropic.clone(),
+    )]);
+
+    let result = merge_configured_model_providers(
+        built_in_model_providers(/*openai_base_url*/ None),
+        configured_model_providers,
+    )
+    .expect("merge 用户覆盖内置应成功");
+
+    // 用户值全量覆盖内置 anthropic（非部分合并）
+    assert_eq!(result[ANTHROPIC_PROVIDER_ID], custom_anthropic);
+    assert_eq!(result[ANTHROPIC_PROVIDER_ID].name, "My Anthropic Gateway");
+    assert_eq!(
+        result[ANTHROPIC_PROVIDER_ID].base_url.as_deref(),
+        Some("https://gw.example.com")
+    );
+}
+
+#[test]
 fn test_validate_provider_aws_rejects_conflicting_auth() {
     let provider = ModelProviderInfo {
         aws: Some(ModelProviderAwsAuthInfo {

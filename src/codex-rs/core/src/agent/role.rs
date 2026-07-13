@@ -205,6 +205,11 @@ mod reload {
     ) -> ConfigOverrides {
         ConfigOverrides {
             cwd: Some(config.cwd.to_path_buf()),
+            // preserve_current_provider 把当前 provider_id 放进 ConfigOverrides.model_provider，
+            // 经 load 链会让子 agent 的 `model_provider_id_explicit=true`——即子 agent 的 provider
+            // 粘住继承值，不因子 agent 自带模型的 provider_id 漂移。这与 preserve 语义一致（有意
+            // 为之），勿当 bug 改回。父会话派生的 provider 一旦被 preserve，在子 agent 侧即升格
+            // 为显式，保证 spawn 前后 provider 稳定。
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             service_tier: preserve_current_service_tier.then(|| config.service_tier.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),

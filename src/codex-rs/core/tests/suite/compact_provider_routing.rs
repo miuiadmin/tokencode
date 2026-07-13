@@ -219,3 +219,156 @@ async fn compact_routes_to_turn_level_provider_after_model_switch_impl() -> Resu
 
     Ok(())
 }
+
+/// 与上一个测试正反对照：**显式**选了 provider（`model_provider_id_explicit=true`）后，
+/// 切到 `provider_id` 不同的模型，压缩仍走**显式 provider**（server_a）——显式 provider
+/// 压制模型自带 `provider_id`。若该修复被破坏（resolver 仍只认模型 provider_id），压缩会
+/// 跟模型走 server_b、server_a 收不到 → 断言失败。
+///
+/// `with_config` 里直写 `model_provider_id_explicit = true`，等价于经 CLI `-c model_provider=`
+/// 或 config.toml `model_provider =` 走 load 链派生出 explicit=true 的最终状态（explicit 是
+/// 加载期一次性派生字段，测试直接设其终值即可，无需重复整个派生逻辑）。
+#[test]
+fn compact_routes_to_explicit_provider_after_model_switch() -> Result<()> {
+    run_with_deep_stack(
+        "compact_routes_to_explicit_provider_after_model_switch",
+        compact_routes_to_explicit_provider_after_model_switch_impl,
+    )
+}
+
+async fn compact_routes_to_explicit_provider_after_model_switch_impl() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server_a = MockServer::start().await;
+    let server_b = MockServer::start().await;
+    let server_a_uri = server_a.uri();
+    let server_b_uri = server_b.uri();
+
+    let mut builder = test_codex().with_auth(CodexAuth::from_api_key("dummy-compact-routing"));
+    builder = builder.with_config(move |config| {
+        let mut providers = built_in_model_providers(/*openai_base_url*/ None);
+        let template = providers
+            .get("openai")
+            .expect("内置 openai provider 应存在")
+            .clone();
+        assert!(
+            template.name == "OpenAI",
+            "内置 openai provider 的 name 应为 \"OpenAI\"（实际 {:?}），否则过不了 supports_remote_compaction 门",
+            template.name,
+        );
+        let mut provider_a = template.clone();
+        provider_a.base_url = Some(format!("{server_a_uri}/v1"));
+        provider_a.env_key = None;
+        let mut provider_b = template.clone();
+        provider_b.base_url = Some(format!("{server_b_uri}/v1"));
+        provider_b.env_key = None;
+        providers.clear();
+        providers.insert("openai-a".to_string(), provider_a);
+        providers.insert("openai-b".to_string(), provider_b);
+
+        // 会话默认 + 显式 provider 都指向 server_a。
+        config.model_provider = providers
+            .get("openai-a")
+            .expect("openai-a provider 应存在")
+            .clone();
+        config.model_providers = providers;
+
+        let template_model = bundled_models_response()
+            .expect("bundled models.json should parse")
+            .models
+            .into_iter()
+            .next()
+            .expect("bundled catalog 应非空");
+        let mut model_a = template_model.clone();
+        model_a.slug = "explicit-route-a".into();
+        model_a.display_name = "explicit-route-a".into();
+        model_a.provider_id = Some("openai-a".into());
+        let mut model_b = template_model.clone();
+        model_b.slug = "explicit-route-b".into();
+        model_b.display_name = "explicit-route-b".into();
+        // 切到这个模型时 provider_id 指向 server_b，但显式 provider 应压制它。
+        model_b.provider_id = Some("openai-b".into());
+        config.model_catalog = Some(ModelsResponse {
+            models: vec![model_a, model_b],
+        });
+
+        config.model = Some("explicit-route-a".into());
+        config.model_provider_id = "openai-a".into();
+        // 关键：标记为显式。这让 resolver 压制模型自带 provider_id（修运行期被模型
+        // provider_id 覆盖、请求打到非预期厂商的 bug）。
+        config.model_provider_id_explicit = true;
+
+        let _ = config.features.disable(Feature::RemoteCompactionV2);
+    });
+    let test = builder.build(&server_a).await?;
+    let codex = test.codex.clone();
+
+    // server_a：初始 turn 的 SSE（恰好 1 次请求建立 history）。
+    let _initial_mock = mount_sse_sequence(
+        &server_a,
+        vec![sse(vec![
+            ev_assistant_message("msg-1", "FIRST_REPLY"),
+            ev_completed("resp-1"),
+        ])],
+    )
+    .await;
+
+    let compacted_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    // server_a 挂压缩 mock（显式 provider，应收到压缩）。
+    let compact_mock_a =
+        mount_compact_json_once(&server_a, json!({ "output": compacted_history.clone() })).await;
+    // server_b 挂压缩 mock 用于反向断言（被显式压制，应保持空）。
+    let compact_mock_b = mount_compact_json_once(&server_b, json!({ "output": compacted_history })).await;
+
+    // 1) 初始 turn 建 history（走 server_a）。
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello before compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // 2) 切到 provider_id="openai-b" 的模型。显式 provider 应压制 → 仍走 server_a。
+    submit_thread_settings(
+        &codex,
+        ThreadSettingsOverrides {
+            model: Some("explicit-route-b".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    // 3) 手动压缩 → 显式 provider 压制模型 provider_id → 走 server_a。
+    codex.submit(Op::Compact).await?;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // 压缩请求落在显式 provider（server_a），路径为 /v1/responses/compact。
+    assert_eq!(
+        compact_mock_a.requests().len(),
+        1,
+        "显式 provider 应压制模型 provider_id，压缩走 server_a"
+    );
+    assert_eq!(
+        compact_mock_a.single_request().path(),
+        "/v1/responses/compact"
+    );
+    // 模型 provider_id 指向的 server_b 不应收到压缩（被显式压制）。
+    assert!(
+        compact_mock_b.requests().is_empty(),
+        "显式 provider 压制下，模型 provider_id（server_b）不应收到压缩，实际收到 {} 条",
+        compact_mock_b.requests().len()
+    );
+
+    Ok(())
+}

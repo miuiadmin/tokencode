@@ -60,6 +60,12 @@ pub(crate) struct SessionConfiguration {
     /// app-server / TUI 读回反映当前 model 的 provider，而非启动时冻结的值。
     pub(super) model_provider_id: String,
 
+    /// 与 `model_provider_id` 配套：是否由用户显式指定 provider（CLI/config.toml）。
+    /// turn 级 resolver 据此决定是否压制模型自带 provider_id。切模型不改动此值
+    ///（`SessionSettingsUpdate` 不含此字段），故用户 config 显式选的 provider 在
+    /// TUI 切模型后保持。
+    pub(super) model_provider_id_explicit: bool,
+
     pub(super) collaboration_mode: CollaborationMode,
     pub(super) model_reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(super) service_tier: Option<String>,

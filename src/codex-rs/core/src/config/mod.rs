@@ -637,6 +637,12 @@ pub struct Config {
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
 
+    /// `model_provider_id` 是否由用户显式指定（CLI `-c model_provider=` 或 config.toml
+    /// `model_provider =`）。true 时 turn 级 resolver 用此 provider 压制模型自带
+    /// `provider_id`（内置 models.json 声明的厂商绑定）；false 时模型的 provider_id
+    /// 优先（派生语义，向后兼容）。仅加载期派生一次，切模型不改动此值。
+    pub model_provider_id_explicit: bool,
+
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
@@ -3418,6 +3424,11 @@ impl Config {
         // 会话内继承的 provider 是运行期活值，重启后这里按配置重新派生（对内置模型通常即回到
         // 其厂商默认，属预期语义），故不另作持久化。
         let effective_model = model.as_deref().or(cfg.model.as_deref());
+        // 档①CLI ConfigOverrides.model_provider、档②config.toml cfg.model_provider 视为
+        // 用户显式；档③（按 model slug 派生）、档④（默认 openai）非显式。在下方 .or() 链
+        // 坍缩成单个 String 之前捕获 origin，供运行期 turn 级 resolver 判断是否压制模型
+        // 自带 provider_id。
+        let model_provider_id_explicit = model_provider.is_some() || cfg.model_provider.is_some();
         let model_provider_id = model_provider
             .or(cfg.model_provider)
             .or_else(|| effective_model.and_then(provider_id_for_model))
@@ -3793,6 +3804,7 @@ impl Config {
                 .model_auto_compact_token_limit_scope
                 .unwrap_or_default(),
             model_provider_id,
+            model_provider_id_explicit,
             model_provider,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),

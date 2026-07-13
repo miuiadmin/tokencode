@@ -1,30 +1,44 @@
 //! 按模型解析其绑定的 provider。
 //!
 //! provider 选择跟随 model：每条模型元数据可声明 `provider_id`，指向 config 的
-//! `model_providers` map；未声明或未命中时回落到会话默认 provider，保持向后兼容。
-//! 这样 TUI 里切换模型时，wire 协议与 base_url 会自动切到该模型对应的厂商。
+//! `model_providers` map。但若用户**显式**指定了 `model_provider`（CLI `-c` 或
+//! config.toml `model_provider =`），显式 provider 压制模型自带的 `provider_id`——
+//! 这让用户能用自己的网关/协议接管某个内置模型（如把 `glm-5.2` 走自建 Anthropic
+//! 网关，而非内置 glm/bigmodel.cn）。未显式时模型 provider_id 优先（向后兼容）。
 
 use std::collections::HashMap;
 
 use codex_model_provider_info::{OPENAI_PROVIDER_ID, ModelProviderInfo};
 use codex_protocol::openai_models::ModelInfo;
 
-/// 依据模型的 `provider_id` 解析它应使用的 provider。
+/// 依据模型的 `provider_id` 与会话默认 provider 解析它应使用的 provider。
 ///
 /// 解析顺序：
-/// 1. `model_info.provider_id` 命中 `model_providers` 中已配置的 provider → 返回它；
-/// 2. 否则回落到会话默认 provider（`default_provider_id`，即今天的 `config.model_provider`）；
-/// 3. 默认 provider 也缺失 → 回落到内置 `openai` provider；仅当连 `openai` 也被从
-///    `model_providers` 移除的极端情形才回落 `ModelProviderInfo::default()`（空壳）。
+/// 1. 若 `default_is_explicit`（用户经 CLI/config.toml 显式选了 provider）→ 用
+///    `default_provider_id`，**压制**模型自带的 `provider_id`；命中缺失时回落
+///    内置 `openai`，再回落 `ModelProviderInfo::default()`（空壳）。
+/// 2. 否则（派生/默认）：`model_info.provider_id` 命中 `model_providers` → 用它；
+/// 3. 未命中 → 回落 `default_provider_id` → 内置 `openai` → 空壳。
 ///
-/// 第 2 步保证老配置（模型无 `provider_id` 概念）行为与现状逐字节一致；第 3 步避免
-/// 在默认 provider 配错时静默返回空壳（空 base_url 会让请求打到无效端点）。
-#[allow(dead_code)] // PR1 仅落地数据层，PR2 的 with_model/make_turn_context 会接入。
+/// 第 1 档保证「用户显式选的 provider 真正生效」（修运行期被模型 provider_id 覆盖、
+/// 请求打到非预期厂商的 bug）；第 2-3 档保持向后兼容（无显式 provider 时，TUI 切
+/// 模型自动切厂商）。`default_is_explicit` 由加载期派生（`config/mod.rs`），切模型
+/// 不改动它，故用户 config 显式选的 provider 在会话生命期内稳定。
 pub fn resolve_provider_for_model(
     model_info: &ModelInfo,
     model_providers: &HashMap<String, ModelProviderInfo>,
     default_provider_id: &str,
+    default_is_explicit: bool,
 ) -> ModelProviderInfo {
+    // ① 用户显式指定 provider → 压制模型自带 provider_id
+    if default_is_explicit {
+        return model_providers
+            .get(default_provider_id)
+            .or_else(|| model_providers.get(OPENAI_PROVIDER_ID))
+            .cloned()
+            .unwrap_or_default();
+    }
+    // ② 非显式：模型 provider_id 优先（派生语义，向后兼容），未命中回落 default→openai
     match model_info.provider_id.as_deref() {
         Some(id) if model_providers.contains_key(id) => model_providers[id].clone(),
         _ => model_providers
@@ -43,10 +57,18 @@ pub fn resolve_provider_id_for_model(
     model_info: &ModelInfo,
     model_providers: &HashMap<String, ModelProviderInfo>,
     default_provider_id: &str,
+    default_is_explicit: bool,
 ) -> String {
+    // ① 用户显式指定 → 压制模型 provider_id
+    if default_is_explicit {
+        if model_providers.contains_key(default_provider_id) {
+            return default_provider_id.to_string();
+        }
+        return OPENAI_PROVIDER_ID.to_string();
+    }
+    // ② 非显式：模型 provider_id 优先，回落 default→openai
     match model_info.provider_id.as_deref() {
         Some(id) if model_providers.contains_key(id) => id.to_string(),
-        // 与 resolve_provider_for_model 保持一致：默认缺失时回落 openai，避免返回无效 id。
         _ => {
             if model_providers.contains_key(default_provider_id) {
                 default_provider_id.to_string()
@@ -115,7 +137,7 @@ mod tests {
     fn hits_declared_provider() {
         let providers = built_in_model_providers(None);
         let info = model_with_provider("glm-5.2", Some("glm"));
-        let resolved = resolve_provider_for_model(&info, &providers, "openai");
+        let resolved = resolve_provider_for_model(&info, &providers, "openai", false);
         assert_eq!(resolved.wire_api, WireApi::Chat);
         assert_eq!(
             resolved.base_url.as_deref(),
@@ -127,7 +149,7 @@ mod tests {
     fn anthropic_provider_wires_anthropic_api() {
         let providers = built_in_model_providers(None);
         let info = model_with_provider("claude-opus-4-8", Some("anthropic"));
-        let resolved = resolve_provider_for_model(&info, &providers, "openai");
+        let resolved = resolve_provider_for_model(&info, &providers, "openai", false);
         assert_eq!(resolved.wire_api, WireApi::Anthropic);
         // Anthropic 内置 provider 不硬编码 max_output_tokens，留 None 由 adapter 常量兜底。
         assert_eq!(resolved.max_output_tokens, None);
@@ -137,7 +159,7 @@ mod tests {
     fn falls_back_to_default_when_provider_id_missing() {
         let providers = built_in_model_providers(None);
         let info = model_with_provider("legacy-model", None);
-        let resolved = resolve_provider_for_model(&info, &providers, "openai");
+        let resolved = resolve_provider_for_model(&info, &providers, "openai", false);
         // 回落到默认 openai provider（Responses 协议）。
         assert_eq!(resolved.wire_api, WireApi::Responses);
     }
@@ -146,7 +168,7 @@ mod tests {
     fn falls_back_to_default_when_provider_id_unknown() {
         let providers = built_in_model_providers(None);
         let info = model_with_provider("x", Some("no-such-provider"));
-        let resolved = resolve_provider_for_model(&info, &providers, "openai");
+        let resolved = resolve_provider_for_model(&info, &providers, "openai", false);
         assert_eq!(resolved.wire_api, WireApi::Responses);
     }
 
@@ -157,7 +179,7 @@ mod tests {
         let providers = built_in_model_providers(None);
         let info = model_with_provider("legacy-model", None);
 
-        let resolved = resolve_provider_for_model(&info, &providers, "no-such-default");
+        let resolved = resolve_provider_for_model(&info, &providers, "no-such-default", false);
         assert_eq!(resolved.name, "OpenAI", "应回落到内置 openai provider，而非空壳");
         assert!(
             !resolved.name.is_empty(),
@@ -166,7 +188,7 @@ mod tests {
 
         // id 变体选择顺序与 provider 变体一致：默认缺失时回落 openai。
         assert_eq!(
-            resolve_provider_id_for_model(&info, &providers, "no-such-default"),
+            resolve_provider_id_for_model(&info, &providers, "no-such-default", false),
             "openai"
         );
     }
@@ -178,21 +200,60 @@ mod tests {
         // 命中声明 provider：id 与 provider 一致（glm）。
         let info = model_with_provider("glm-5.2", Some("glm"));
         assert_eq!(
-            resolve_provider_id_for_model(&info, &providers, "openai"),
+            resolve_provider_id_for_model(&info, &providers, "openai", false),
             "glm"
         );
 
         // 缺省 provider_id：回落默认 openai。
         let info = model_with_provider("legacy", None);
         assert_eq!(
-            resolve_provider_id_for_model(&info, &providers, "openai"),
+            resolve_provider_id_for_model(&info, &providers, "openai", false),
             "openai"
         );
 
         // 未知 provider_id：同样回落默认。
         let info = model_with_provider("x", Some("no-such-provider"));
         assert_eq!(
-            resolve_provider_id_for_model(&info, &providers, "openai"),
+            resolve_provider_id_for_model(&info, &providers, "openai", false),
+            "openai"
+        );
+    }
+
+    #[test]
+    fn explicit_default_overrides_model_provider_id() {
+        // 用户显式选了 provider（default_is_explicit=true）：即便模型自带 provider_id
+        // 命中内置，也用显式 provider——本修复的核心，让显式选择压制模型绑定。
+        let providers = built_in_model_providers(None);
+        let info = model_with_provider("glm-5.2", Some("glm")); // 模型绑定 glm
+        let resolved = resolve_provider_for_model(&info, &providers, "anthropic", true);
+        // 显式选 anthropic，压制 glm → 返回 anthropic（Anthropic 协议）
+        assert_eq!(resolved.wire_api, WireApi::Anthropic);
+        assert_ne!(
+            resolved.base_url.as_deref(),
+            Some("https://open.bigmodel.cn/api/paas/v4"),
+            "显式 provider 不得被模型自带 provider_id 覆盖"
+        );
+
+        // id 变体同理：返回显式 provider id
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "anthropic", true),
+            "anthropic"
+        );
+    }
+
+    #[test]
+    fn explicit_default_missing_falls_back_to_openai() {
+        // 显式 provider 指向不存在的 id：回落内置 openai（而非空壳），与派生路径回落一致。
+        let providers = built_in_model_providers(None);
+        let info = model_with_provider("glm-5.2", Some("glm"));
+        let resolved = resolve_provider_for_model(&info, &providers, "no-such-explicit", true);
+        assert_eq!(
+            resolved.name, "OpenAI",
+            "显式 provider 缺失应回落内置 openai，而非空壳"
+        );
+
+        assert_eq!(
+            resolve_provider_id_for_model(&info, &providers, "no-such-explicit", true),
             "openai"
         );
     }

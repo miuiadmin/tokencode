@@ -137,11 +137,14 @@ async fn thread_settings_update(
         // 状态锁——get_model_info 可能触发远端模型目录拉取，持锁 await 会阻塞所有 turn 处理。
         // 回落用活值 model_provider_id（而非 original_config 的启动冻结值）：无 provider_id
         // 的模型中途切换时继承当前会话 provider，而非跳回启动默认。
-        let (original_config, current_provider_id) = {
+        let (original_config, current_provider_id, provider_id_explicit) = {
             let state = sess.state.lock().await;
             let config = state.session_configuration.original_config_do_not_use.clone();
             let id = state.session_configuration.model_provider_id.clone();
-            (config, id)
+            // explicit 是活值（与 id 同源读 session_configuration），保证切模型时沿用
+            // 用户 config 显式选的 provider 而非启动冻结的派生值。
+            let explicit = state.session_configuration.model_provider_id_explicit;
+            (config, id, explicit)
         };
         let models_manager_config = original_config.to_models_manager_config();
         let model_info = sess
@@ -153,11 +156,13 @@ async fn thread_settings_update(
             &model_info,
             &original_config.model_providers,
             &current_provider_id,
+            provider_id_explicit,
         );
         let provider_id = resolve_provider_id_for_model(
             &model_info,
             &original_config.model_providers,
             &current_provider_id,
+            provider_id_explicit,
         );
         (Some(provider), Some(provider_id))
     } else {
