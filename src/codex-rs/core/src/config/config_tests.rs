@@ -586,6 +586,7 @@ prefill_token_weight = 0.1
             reminder_at_remaining_tokens: vec![50_000, 25_000, 10_000],
             sampling_token_weight: 1.0,
             prefill_token_weight: 0.1,
+            reasoning_token_weight: 1.0,
         })
     );
     Ok(())

@@ -1112,6 +1112,14 @@ pub struct RolloutBudgetConfig {
     pub reminder_at_remaining_tokens: Vec<i64>,
     pub sampling_token_weight: f64,
     pub prefill_token_weight: f64,
+    /// 推理 token（`reasoning_output_tokens`）在加权预算里的权重。
+    ///
+    /// 推理 token 是模型生成的输出（与采样输出同属 output-tier），故默认与
+    /// `sampling_token_weight` 对齐取 `1.0`，而非像 prefill 输入那样打折。
+    /// 各协议 adapter 把思考 token 独立回填到 `reasoning_output_tokens`（如 Gemini
+    /// 的 thoughtsTokenCount）；Anthropic 把 thinking 计入 `output_tokens`、其
+    /// `reasoning_output_tokens` 恒 0，故此项对 Anthropic 自然无影响。
+    pub reasoning_token_weight: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2560,9 +2568,12 @@ fn resolve_rollout_budget_config(
     }
     let sampling_token_weight = config.sampling_token_weight.unwrap_or(1.0);
     let prefill_token_weight = config.prefill_token_weight.unwrap_or(1.0);
+    // 推理 token 默认与采样输出同权（output-tier，默认 1.0）。
+    let reasoning_token_weight = config.reasoning_token_weight.unwrap_or(1.0);
     for (field, weight) in [
         ("sampling_token_weight", sampling_token_weight),
         ("prefill_token_weight", prefill_token_weight),
+        ("reasoning_token_weight", reasoning_token_weight),
     ] {
         if !weight.is_finite() || weight < 0.0 {
             return Err(std::io::Error::new(
@@ -2576,6 +2587,7 @@ fn resolve_rollout_budget_config(
         reminder_at_remaining_tokens,
         sampling_token_weight,
         prefill_token_weight,
+        reasoning_token_weight,
     }))
 }
 

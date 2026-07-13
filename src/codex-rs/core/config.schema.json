@@ -2789,6 +2789,12 @@
           "minimum": 0.0,
           "type": "number"
         },
+        "reasoning_token_weight": {
+          "description": "推理 token（`reasoning_output_tokens`）权重，缺省与采样输出同权（1.0）。",
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
         "reminder_at_remaining_tokens": {
           "description": "Remaining weighted-token values that trigger reminders when crossed.",
           "items": {

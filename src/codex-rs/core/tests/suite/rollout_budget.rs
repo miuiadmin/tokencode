@@ -33,6 +33,7 @@ fn rollout_budget() -> RolloutBudgetConfig {
         reminder_at_remaining_tokens: vec![75, 50, 25],
         sampling_token_weight: 1.0,
         prefill_token_weight: 1.0,
+        reasoning_token_weight: 1.0,
     }
 }
 

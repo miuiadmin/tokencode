@@ -123,6 +123,10 @@ pub struct RolloutBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0.0))]
     pub prefill_token_weight: Option<f64>,
+    /// 推理 token（`reasoning_output_tokens`）权重，缺省与采样输出同权（1.0）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub reasoning_token_weight: Option<f64>,
 }
 
 impl FeatureConfig for RolloutBudgetConfigToml {
