@@ -1,9 +1,7 @@
 use super::AuthRequestTelemetryContext;
 use super::CompactConversationRequestSettings;
 use super::ModelClient;
-use super::PendingUnauthorizedRetry;
 use super::Prompt;
-use super::UnauthorizedRecoveryExecution;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
@@ -659,30 +657,23 @@ async fn response_stream_records_last_model_feedback_ids() {
     );
 }
 
-#[tokio::test]
-async fn bedrock_unauthorized_error_uses_provider_mapping() {
+#[test]
+fn bedrock_unauthorized_error_uses_provider_mapping() {
     let provider = create_model_provider(
         ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
         /*auth_manager*/ None,
     );
-    let mut auth_recovery = None;
     let url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses";
-    let error = super::handle_unauthorized(
-        TransportError::Http {
-            status: http::StatusCode::UNAUTHORIZED,
-            url: Some(url.to_string()),
-            headers: None,
-            body: Some(
-                "Signature expired: 20260609T133205Z is now earlier than 20260614T062525Z"
-                    .to_string(),
-            ),
-        },
-        &mut auth_recovery,
-        &test_session_telemetry(),
-        &provider,
-    )
-    .await
-    .expect_err("expired Bedrock signature should fail");
+    // API key 鉴权下 401 即终态，不再走 token 刷新恢复，直接由 provider 映射为业务错误。
+    let error = provider.map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::UNAUTHORIZED,
+        url: Some(url.to_string()),
+        headers: None,
+        body: Some(
+            "Signature expired: 20260609T133205Z is now earlier than 20260614T062525Z"
+                .to_string(),
+        ),
+    }));
 
     assert_eq!(
         error.to_string(),
@@ -743,23 +734,16 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 }
 
 #[test]
-fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
+fn auth_request_telemetry_context_tracks_attached_auth() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
         &BearerAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
         /*agent_identity_telemetry*/ None,
-        PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
-            mode: "managed",
-            phase: "refresh_token",
-        }),
     );
 
     assert_eq!(auth_context.auth_mode, Some("Chatgpt"));
     assert!(auth_context.auth_header_attached);
     assert_eq!(auth_context.auth_header_name, Some("authorization"));
-    assert!(auth_context.retry_after_unauthorized);
-    assert_eq!(auth_context.recovery_mode, Some("managed"));
-    assert_eq!(auth_context.recovery_phase, Some("refresh_token"));
 }
 
 #[test]
@@ -771,7 +755,6 @@ fn auth_request_telemetry_context_tracks_agent_identity_ids() {
             agent_id: "agent-runtime-context".to_string(),
             task_id: "task-run-context".to_string(),
         }),
-        PendingUnauthorizedRetry::default(),
     );
 
     assert_eq!(

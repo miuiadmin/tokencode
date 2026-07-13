@@ -71,8 +71,6 @@ use codex_language_model::UnifiedEvent;
 use codex_language_model::UnifiedEventStream;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_login::RefreshTokenError;
-use codex_login::UnauthorizedRecovery;
 use codex_default_client::build_reqwest_client;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
@@ -120,7 +118,6 @@ use crate::client_common::ResponseStream;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
-use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -565,7 +562,6 @@ impl ModelClient {
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
             ),
             RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
             self.state.auth_env_telemetry.clone(),
@@ -699,7 +695,6 @@ impl ModelClient {
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
             ),
             RequestRouteTelemetry::for_endpoint(MEMORIES_SUMMARIZE_ENDPOINT),
             self.state.auth_env_telemetry.clone(),
@@ -1322,7 +1317,6 @@ impl ModelClientSession {
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
             client_setup.api_auth.as_ref(),
             client_setup.agent_identity_telemetry.clone(),
-            PendingUnauthorizedRetry::default(),
         );
         let connection = self
             .client
@@ -1423,11 +1417,8 @@ impl ModelClientSession {
             ))
     }
 
-    fn responses_request_compression(&self, auth: Option<&CodexAuth>) -> Compression {
-        if self.client.state.enable_request_compression
-            && auth.is_some_and(CodexAuth::uses_codex_backend)
-            && self.provider.info().is_openai()
-        {
+    fn responses_request_compression(&self) -> Compression {
+        if self.client.state.enable_request_compression && self.provider.info().is_openai() {
             Compression::Zstd
         } else {
             Compression::None
@@ -1585,109 +1576,80 @@ impl ModelClientSession {
             Option<Arc<dyn SseTelemetry>>,
         ) -> A,
     {
-        let auth_manager = self.provider.auth_manager();
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(AuthManager::unauthorized_recovery);
-        let mut pending_retry = PendingUnauthorizedRetry::default();
-        loop {
-            let client_setup = self.current_client_setup().await?;
-            let transport = ReqwestTransport::new(build_reqwest_client());
-            let request_auth_context = AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
-            );
-            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
-                session_telemetry,
-                request_auth_context,
-                RequestRouteTelemetry::for_endpoint(endpoint),
-                self.client.state.auth_env_telemetry.clone(),
-            );
-            let compression = self.responses_request_compression(client_setup.auth.as_ref());
-            let mut options = self
-                .build_responses_options(
-                    responses_metadata,
-                    compression,
-                    model_info.use_responses_lite,
-                )
-                .await;
-
-            let mut request = self.client.build_responses_request(
-                &client_setup.api_provider,
-                self.provider.info(),
-                prompt,
-                model_info,
-                effort.clone(),
-                summary,
-                service_tier.clone(),
+        let client_setup = self.current_client_setup().await?;
+        let transport = ReqwestTransport::new(build_reqwest_client());
+        let request_auth_context = AuthRequestTelemetryContext::new(
+            client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+            client_setup.api_auth.as_ref(),
+            client_setup.agent_identity_telemetry.clone(),
+        );
+        let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+            session_telemetry,
+            request_auth_context,
+            RequestRouteTelemetry::for_endpoint(endpoint),
+            self.client.state.auth_env_telemetry.clone(),
+        );
+        let compression = self.responses_request_compression();
+        let mut options = self
+            .build_responses_options(
                 responses_metadata,
-            )?;
-            let store = request.store;
-            self.client
-                .prepare_response_items_for_request(&mut request.input, store);
-            let request_session_telemetry =
-                session_telemetry_for_request(session_telemetry, &request);
-            let inference_trace_attempt = inference_trace.start_attempt();
-            inference_trace_attempt.add_request_headers(&mut options.extra_headers);
-            inference_trace_attempt.record_started(&request);
-            let adapter = build_adapter(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-                Some(request_telemetry),
-                Some(sse_telemetry),
-            );
-            // 经中立 LanguageModel trait：请求 / 选项转为中立类型；错误统一 downcast 回 ApiError，
-            // 以保留既有的 401 重试与 provider 错误映射路径（行为零变化）。
-            let stream_result = adapter
-                .stream(request.into(), options.into())
-                .await
-                .map_err(unified_error_to_api_error);
+                compression,
+                model_info.use_responses_lite,
+            )
+            .await;
 
-            match stream_result {
-                Ok(stream) => {
-                    let (stream, _) = map_response_stream(
-                        stream,
-                        request_session_telemetry,
-                        inference_trace_attempt,
-                        Arc::clone(&self.provider),
-                    );
-                    return Ok(stream);
-                }
-                Err(ApiError::Transport(
-                    unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
-                    let response_debug_context =
-                        extract_response_debug_context(&unauthorized_transport);
-                    inference_trace_attempt.record_failed(
-                        &unauthorized_transport,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    pending_retry = PendingUnauthorizedRetry::from_recovery(
-                        handle_unauthorized(
-                            unauthorized_transport,
-                            &mut auth_recovery,
-                            session_telemetry,
-                            &self.provider,
-                        )
-                        .await?,
-                    );
-                    continue;
-                }
-                Err(err) => {
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
-                    let err = self.provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &err,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    return Err(err);
-                }
+        let mut request = self.client.build_responses_request(
+            &client_setup.api_provider,
+            self.provider.info(),
+            prompt,
+            model_info,
+            effort.clone(),
+            summary,
+            service_tier.clone(),
+            responses_metadata,
+        )?;
+        let store = request.store;
+        self.client
+            .prepare_response_items_for_request(&mut request.input, store);
+        let request_session_telemetry =
+            session_telemetry_for_request(session_telemetry, &request);
+        let inference_trace_attempt = inference_trace.start_attempt();
+        inference_trace_attempt.add_request_headers(&mut options.extra_headers);
+        inference_trace_attempt.record_started(&request);
+        let adapter = build_adapter(
+            transport,
+            client_setup.api_provider,
+            client_setup.api_auth,
+            Some(request_telemetry),
+            Some(sse_telemetry),
+        );
+        // 经中立 LanguageModel trait：请求 / 选项转为中立类型；错误统一 downcast 回 ApiError，
+        // 由 provider 映射后作为终态返回（API key 鉴权下 401 即终态，不再刷新重试）。
+        let stream_result = adapter
+            .stream(request.into(), options.into())
+            .await
+            .map_err(unified_error_to_api_error);
+
+        match stream_result {
+            Ok(stream) => {
+                let (stream, _) = map_response_stream(
+                    stream,
+                    request_session_telemetry,
+                    inference_trace_attempt,
+                    Arc::clone(&self.provider),
+                );
+                Ok(stream)
+            }
+            Err(err) => {
+                let response_debug_context =
+                    extract_response_debug_context_from_api_error(&err);
+                let err = self.provider.map_api_error(err);
+                inference_trace_attempt.record_failed(
+                    &err,
+                    response_debug_context.request_id.as_deref(),
+                    /*output_items*/ &[],
+                );
+                Err(err)
             }
         }
     }
@@ -1720,148 +1682,124 @@ impl ModelClientSession {
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<WebsocketStreamOutcome> {
-        let auth_manager = self.provider.auth_manager();
-
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(AuthManager::unauthorized_recovery);
-        let mut pending_retry = PendingUnauthorizedRetry::default();
-        loop {
-            let client_setup = self.current_client_setup().await?;
-            let request_auth_context = AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
-            );
-            let request = self.client.build_responses_request(
-                &client_setup.api_provider,
-                self.provider.info(),
-                prompt,
-                model_info,
-                effort.clone(),
-                summary,
-                service_tier.clone(),
-                responses_metadata,
-            )?;
-            let request_session_telemetry = if warmup {
-                // `generate=false` prewarm is connection setup, not an inference request.
-                session_telemetry.clone()
-            } else {
-                session_telemetry_for_request(session_telemetry, &request)
-            };
-            let mut client_metadata = self
-                .client
-                .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
-            if let Some(turn_state) = self.turn_state.get() {
-                client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
-            }
-            let mut ws_payload = ResponseCreateWsRequest {
-                client_metadata: response_create_client_metadata(
-                    Some(client_metadata),
-                    request_trace.as_ref(),
-                ),
-                ..ResponseCreateWsRequest::from(&request)
-            };
-            if warmup {
-                ws_payload.generate = Some(false);
-            }
-
-            match self
-                .websocket_connection(WebsocketConnectParams {
-                    session_telemetry,
-                    api_provider: client_setup.api_provider,
-                    api_auth: client_setup.api_auth,
-                    responses_metadata,
-                    auth_context: request_auth_context,
-                    request_route_telemetry: RequestRouteTelemetry::for_endpoint(
-                        RESPONSES_ENDPOINT,
-                    ),
-                })
-                .await
-            {
-                Ok(_) => {}
-                Err(ApiError::Transport(TransportError::Http { status, .. }))
-                    if status == StatusCode::UPGRADE_REQUIRED =>
-                {
-                    return Ok(WebsocketStreamOutcome::FallbackToHttp);
-                }
-                Err(ApiError::Transport(
-                    unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
-                    pending_retry = PendingUnauthorizedRetry::from_recovery(
-                        handle_unauthorized(
-                            unauthorized_transport,
-                            &mut auth_recovery,
-                            session_telemetry,
-                            &self.provider,
-                        )
-                        .await?,
-                    );
-                    continue;
-                }
-                Err(err) => return Err(self.provider.map_api_error(err)),
-            }
-
-            let (mut ws_request, previous_response_id_from_untraced_warmup) =
-                self.prepare_websocket_request(ws_payload, &request);
-            let inference_trace_attempt = if warmup {
-                // Prewarm sends `generate=false`; it is connection setup, not a
-                // model inference attempt that should appear in rollout traces.
-                InferenceTraceAttempt::disabled()
-            } else {
-                inference_trace.start_attempt()
-            };
-            stamp_ws_stream_request_start_ms(&mut ws_request);
-            let ResponsesWsRequest::ResponseCreate(ws_payload) = &mut ws_request;
-            let store = ws_payload.store;
-            self.client
-                .prepare_response_items_for_request(&mut ws_payload.input, store);
-            if previous_response_id_from_untraced_warmup {
-                // The transport can reuse an untraced warmup response id and omit the
-                // already-sent input, but rollout replay needs the logical model-visible
-                // request rather than the compressed websocket delta.
-                inference_trace_attempt.record_started(&request);
-            } else {
-                inference_trace_attempt.record_started(&ws_request);
-            }
-            self.websocket_session.last_request = Some(request);
-            self.websocket_session.last_response_from_untraced_warmup = warmup;
-            let websocket_connection =
-                self.websocket_session.connection.as_ref().ok_or_else(|| {
-                    self.provider.map_api_error(ApiError::Stream(
-                        "websocket connection is unavailable".to_string(),
-                    ))
-                })?;
-            let stream_result = websocket_connection
-                .stream_request(
-                    ws_request,
-                    self.websocket_session.connection_reused(),
-                    Some(Arc::clone(&self.turn_state)),
-                )
-                .await
-                .map_err(|err| {
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
-                    let err = self.provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &err,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    err
-                })?;
-            let (stream, last_request_rx) = map_response_stream(
-                // WebSocket 路径不经 LanguageModel trait：在边界处把 Responses 事件流归一为中立流，
-                // 复用与 HTTP 路径一致的事件消费逻辑（map_response_stream / map_response_events）。
-                codex_api::response_stream_to_unified(stream_result),
-                request_session_telemetry,
-                inference_trace_attempt,
-                Arc::clone(&self.provider),
-            );
-            self.websocket_session.last_response_rx = Some(last_request_rx);
-            return Ok(WebsocketStreamOutcome::Stream(stream));
+        let client_setup = self.current_client_setup().await?;
+        let request_auth_context = AuthRequestTelemetryContext::new(
+            client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+            client_setup.api_auth.as_ref(),
+            client_setup.agent_identity_telemetry.clone(),
+        );
+        let request = self.client.build_responses_request(
+            &client_setup.api_provider,
+            self.provider.info(),
+            prompt,
+            model_info,
+            effort.clone(),
+            summary,
+            service_tier.clone(),
+            responses_metadata,
+        )?;
+        let request_session_telemetry = if warmup {
+            // `generate=false` prewarm is connection setup, not an inference request.
+            session_telemetry.clone()
+        } else {
+            session_telemetry_for_request(session_telemetry, &request)
+        };
+        let mut client_metadata = self
+            .client
+            .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
+        if let Some(turn_state) = self.turn_state.get() {
+            client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
         }
+        let mut ws_payload = ResponseCreateWsRequest {
+            client_metadata: response_create_client_metadata(
+                Some(client_metadata),
+                request_trace.as_ref(),
+            ),
+            ..ResponseCreateWsRequest::from(&request)
+        };
+        if warmup {
+            ws_payload.generate = Some(false);
+        }
+
+        match self
+            .websocket_connection(WebsocketConnectParams {
+                session_telemetry,
+                api_provider: client_setup.api_provider,
+                api_auth: client_setup.api_auth,
+                responses_metadata,
+                auth_context: request_auth_context,
+                request_route_telemetry: RequestRouteTelemetry::for_endpoint(RESPONSES_ENDPOINT),
+            })
+            .await
+        {
+            Ok(_) => {}
+            Err(ApiError::Transport(TransportError::Http { status, .. }))
+                if status == StatusCode::UPGRADE_REQUIRED =>
+            {
+                return Ok(WebsocketStreamOutcome::FallbackToHttp);
+            }
+            // API key 鉴权下 401 即终态，不再刷新重试，统一由 map_api_error 映射后返回。
+            Err(err) => return Err(self.provider.map_api_error(err)),
+        }
+
+        let (mut ws_request, previous_response_id_from_untraced_warmup) =
+            self.prepare_websocket_request(ws_payload, &request);
+        let inference_trace_attempt = if warmup {
+            // Prewarm sends `generate=false`; it is connection setup, not a
+            // model inference attempt that should appear in rollout traces.
+            InferenceTraceAttempt::disabled()
+        } else {
+            inference_trace.start_attempt()
+        };
+        stamp_ws_stream_request_start_ms(&mut ws_request);
+        let ResponsesWsRequest::ResponseCreate(ws_payload) = &mut ws_request;
+        let store = ws_payload.store;
+        self.client
+            .prepare_response_items_for_request(&mut ws_payload.input, store);
+        if previous_response_id_from_untraced_warmup {
+            // The transport can reuse an untraced warmup response id and omit the
+            // already-sent input, but rollout replay needs the logical model-visible
+            // request rather than the compressed websocket delta.
+            inference_trace_attempt.record_started(&request);
+        } else {
+            inference_trace_attempt.record_started(&ws_request);
+        }
+        self.websocket_session.last_request = Some(request);
+        self.websocket_session.last_response_from_untraced_warmup = warmup;
+        let websocket_connection =
+            self.websocket_session.connection.as_ref().ok_or_else(|| {
+                self.provider.map_api_error(ApiError::Stream(
+                    "websocket connection is unavailable".to_string(),
+                ))
+            })?;
+        let stream_result = websocket_connection
+            .stream_request(
+                ws_request,
+                self.websocket_session.connection_reused(),
+                Some(Arc::clone(&self.turn_state)),
+            )
+            .await
+            .map_err(|err| {
+                let response_debug_context =
+                    extract_response_debug_context_from_api_error(&err);
+                let err = self.provider.map_api_error(err);
+                inference_trace_attempt.record_failed(
+                    &err,
+                    response_debug_context.request_id.as_deref(),
+                    /*output_items*/ &[],
+                );
+                err
+            })?;
+        let (stream, last_request_rx) = map_response_stream(
+            // WebSocket 路径不经 LanguageModel trait：在边界处把 Responses 事件流归一为中立流，
+            // 复用与 HTTP 路径一致的事件消费逻辑（map_response_stream / map_response_events）。
+            codex_api::response_stream_to_unified(stream_result),
+            request_session_telemetry,
+            inference_trace_attempt,
+            Arc::clone(&self.provider),
+        );
+        self.websocket_session.last_response_rx = Some(last_request_rx);
+        Ok(WebsocketStreamOutcome::Stream(stream))
     }
 
     /// Builds request and SSE telemetry for streaming API calls.
@@ -2330,33 +2268,6 @@ where
     )
 }
 
-/// Handles a 401 response by optionally refreshing ChatGPT tokens once.
-///
-/// When refresh succeeds, the caller should retry the API call; otherwise
-/// the mapped `CodexErr` is returned to the caller.
-#[derive(Clone, Copy, Debug)]
-struct UnauthorizedRecoveryExecution {
-    mode: &'static str,
-    phase: &'static str,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PendingUnauthorizedRetry {
-    retry_after_unauthorized: bool,
-    recovery_mode: Option<&'static str>,
-    recovery_phase: Option<&'static str>,
-}
-
-impl PendingUnauthorizedRetry {
-    fn from_recovery(recovery: UnauthorizedRecoveryExecution) -> Self {
-        Self {
-            retry_after_unauthorized: true,
-            recovery_mode: Some(recovery.mode),
-            recovery_phase: Some(recovery.phase),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 struct AuthRequestTelemetryContext {
     auth_mode: Option<&'static str>,
@@ -2373,7 +2284,6 @@ impl AuthRequestTelemetryContext {
         auth_mode: Option<AuthMode>,
         api_auth: &dyn AuthProvider,
         agent_identity_telemetry: Option<AgentIdentityTelemetry>,
-        retry: PendingUnauthorizedRetry,
     ) -> Self {
         let auth_telemetry = auth_header_telemetry(api_auth);
         Self {
@@ -2387,9 +2297,10 @@ impl AuthRequestTelemetryContext {
             auth_header_attached: auth_telemetry.attached,
             auth_header_name: auth_telemetry.name,
             agent_identity_telemetry,
-            retry_after_unauthorized: retry.retry_after_unauthorized,
-            recovery_mode: retry.recovery_mode,
-            recovery_phase: retry.recovery_phase,
+            // API key 鉴权下不再走 token 刷新恢复，三个恢复相关字段恒为关闭态。
+            retry_after_unauthorized: false,
+            recovery_mode: None,
+            recovery_phase: None,
         }
     }
 
@@ -2405,123 +2316,6 @@ struct WebsocketConnectParams<'a> {
     responses_metadata: &'a CodexResponsesMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,
-}
-
-async fn handle_unauthorized(
-    transport: TransportError,
-    auth_recovery: &mut Option<UnauthorizedRecovery>,
-    session_telemetry: &SessionTelemetry,
-    provider: &SharedModelProvider,
-) -> Result<UnauthorizedRecoveryExecution> {
-    let debug = extract_response_debug_context(&transport);
-    if let Some(recovery) = auth_recovery
-        && recovery.has_next()
-    {
-        let mode = recovery.mode_name();
-        let phase = recovery.step_name();
-        return match recovery.next().await {
-            Ok(step_result) => {
-                session_telemetry.record_auth_recovery(
-                    mode,
-                    phase,
-                    "recovery_succeeded",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                    /*recovery_reason*/ None,
-                    step_result.auth_state_changed(),
-                );
-                emit_feedback_auth_recovery_tags(
-                    mode,
-                    phase,
-                    "recovery_succeeded",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                );
-                Ok(UnauthorizedRecoveryExecution { mode, phase })
-            }
-            Err(RefreshTokenError::Permanent(failed)) => {
-                session_telemetry.record_auth_recovery(
-                    mode,
-                    phase,
-                    "recovery_failed_permanent",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                    /*recovery_reason*/ None,
-                    /*auth_state_changed*/ None,
-                );
-                emit_feedback_auth_recovery_tags(
-                    mode,
-                    phase,
-                    "recovery_failed_permanent",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                );
-                Err(CodexErr::RefreshTokenFailed(failed))
-            }
-            Err(RefreshTokenError::Transient(other)) => {
-                session_telemetry.record_auth_recovery(
-                    mode,
-                    phase,
-                    "recovery_failed_transient",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                    /*recovery_reason*/ None,
-                    /*auth_state_changed*/ None,
-                );
-                emit_feedback_auth_recovery_tags(
-                    mode,
-                    phase,
-                    "recovery_failed_transient",
-                    debug.request_id.as_deref(),
-                    debug.cf_ray.as_deref(),
-                    debug.auth_error.as_deref(),
-                    debug.auth_error_code.as_deref(),
-                );
-                Err(CodexErr::Io(other))
-            }
-        };
-    }
-
-    let (mode, phase, recovery_reason) = match auth_recovery.as_ref() {
-        Some(recovery) => (
-            recovery.mode_name(),
-            recovery.step_name(),
-            Some(recovery.unavailable_reason()),
-        ),
-        None => ("none", "none", Some("auth_manager_missing")),
-    };
-    session_telemetry.record_auth_recovery(
-        mode,
-        phase,
-        "recovery_not_run",
-        debug.request_id.as_deref(),
-        debug.cf_ray.as_deref(),
-        debug.auth_error.as_deref(),
-        debug.auth_error_code.as_deref(),
-        recovery_reason,
-        /*auth_state_changed*/ None,
-    );
-    emit_feedback_auth_recovery_tags(
-        mode,
-        phase,
-        "recovery_not_run",
-        debug.request_id.as_deref(),
-        debug.cf_ray.as_deref(),
-        debug.auth_error.as_deref(),
-        debug.auth_error_code.as_deref(),
-    );
-
-    Err(provider.map_api_error(ApiError::Transport(transport)))
 }
 
 fn api_error_http_status(error: &ApiError) -> Option<u16> {
