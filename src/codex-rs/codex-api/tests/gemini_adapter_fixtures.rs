@@ -34,6 +34,9 @@ use codex_language_model::UnifiedEventStream;
 use codex_language_model::UnifiedReasoning;
 use codex_language_model::UnifiedRequest;
 use codex_language_model::UnifiedRequestOptions;
+use codex_language_model::UnifiedTextControls;
+use codex_language_model::UnifiedTextFormat;
+use codex_language_model::UnifiedTextFormatType;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -887,6 +890,142 @@ async fn provider_max_output_tokens_drives_wire() {
         assert_eq!(
             max, expected,
             "provider.max_output_tokens={configured:?} 时 wire maxOutputTokens 应为 {expected:?}"
+        );
+    }
+}
+
+/// text.format（结构化输出）→ generationConfig.responseMimeType=application/json +
+/// responseSchema（先 strip 禁键 $schema/title/$defs/$ref/default/examples/definitions，
+/// 再 sanitize：integer enum→string enum）。
+#[tokio::test]
+async fn text_format_drives_wire_response_schema() {
+    let body = build_gemini_body(&[json!({
+        "candidates": [{"content": {"role": "model", "parts": [{"text": "x"}]}, "finishReason": "STOP"}]
+    })]);
+    let captured = Arc::new(Mutex::new(None::<Value>));
+
+    // schema 故意塞满 Gemini responseSchema 拒绝的键 + 嵌套 integer enum（验证 strip 先于 sanitize）。
+    let schema = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Person",
+        "$defs": {"Foo": {"type": "string"}},
+        "definitions": {"Legacy": {"type": "string"}},
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer", "enum": [1, 2, 3], "default": 1, "examples": [1]},
+            "addr": {"$ref": "#/$defs/Foo", "title": "Inner"}
+        },
+        "required": ["name"]
+    });
+    let mut req = sample_unified_request();
+    req.text = Some(UnifiedTextControls {
+        verbosity: None,
+        format: Some(UnifiedTextFormat {
+            r#type: UnifiedTextFormatType::JsonSchema,
+            strict: true,
+            schema,
+            name: "person".to_string(),
+        }),
+    });
+    let adapter = GeminiAdapter::new(
+        CapturingTransport::new(body, captured.clone()),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let _ = LanguageModel::stream(&adapter, req, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+
+    let wire = captured
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    let gen_cfg = wire
+        .get("generationConfig")
+        .expect("结构化输出应产出 generationConfig");
+
+    // responseMimeType 固定 application/json。
+    assert_eq!(
+        gen_cfg.get("responseMimeType").and_then(|v| v.as_str()),
+        Some("application/json"),
+        "带 text.format 时 responseMimeType 应为 application/json"
+    );
+
+    let resp_schema = gen_cfg
+        .get("responseSchema")
+        .expect("应有 responseSchema");
+
+    // 根级禁键全剥：$schema / title / $defs / definitions 不应残留。
+    for key in ["$schema", "title", "$defs", "definitions"] {
+        assert!(
+            resp_schema.get(key).is_none(),
+            "responseSchema 根级残留禁键 {key:?}"
+        );
+    }
+    // type / properties / required 保留。
+    assert_eq!(
+        resp_schema.get("type").and_then(|v| v.as_str()),
+        Some("object")
+    );
+    let props = resp_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("properties 应保留");
+
+    // age：integer enum 经 sanitize → type=string / enum stringify；default / examples 经 strip 剥除。
+    let age = &props["age"];
+    assert_eq!(age.get("type").and_then(|v| v.as_str()), Some("string"));
+    let enum_vals: Vec<&str> = age
+        .get("enum")
+        .and_then(|v| v.as_array())
+        .expect("enum 应保留")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(enum_vals, vec!["1", "2", "3"], "integer enum 应 stringify");
+    assert!(age.get("default").is_none(), "age.default 应被 strip 剥除");
+    assert!(age.get("examples").is_none(), "age.examples 应被 strip 剥除");
+
+    // addr：$ref / title 经 strip 剥除（嵌套节点递归生效）。
+    let addr = &props["addr"];
+    assert!(addr.get("$ref").is_none(), "addr.$ref 应被 strip 剥除");
+    assert!(addr.get("title").is_none(), "addr.title 应被 strip 剥除");
+}
+
+/// 无 text.format 时不应发 responseMimeType / responseSchema（结构化输出按需，避免误开 JSON 模式）。
+#[tokio::test]
+async fn no_text_format_omits_response_schema() {
+    let body = build_gemini_body(&[json!({
+        "candidates": [{"content": {"role": "model", "parts": [{"text": "x"}]}, "finishReason": "STOP"}]
+    })]);
+    let captured = Arc::new(Mutex::new(None::<Value>));
+    let adapter = GeminiAdapter::new(
+        CapturingTransport::new(body, captured.clone()),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    // sample_unified_request() 的 text = None。
+    let _ = LanguageModel::stream(&adapter, sample_unified_request(), sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+
+    let wire = captured
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    let gen_cfg = wire.get("generationConfig");
+    // 无 text.format 时这两个字段都不应出现。
+    if let Some(gen_cfg) = gen_cfg {
+        assert!(
+            gen_cfg.get("responseMimeType").is_none(),
+            "无 text.format 时不应发 responseMimeType"
+        );
+        assert!(
+            gen_cfg.get("responseSchema").is_none(),
+            "无 text.format 时不应发 responseSchema"
         );
     }
 }

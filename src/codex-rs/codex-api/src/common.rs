@@ -725,7 +725,10 @@ pub struct GeminiThinkingConfig {
 ///
 /// `max_output_tokens` 由 adapter 从 `Provider.max_output_tokens` 注入（None 时不发，
 /// 走服务端默认）。`thinking_config` 由 adapter 从 `UnifiedReasoning.effort` + model
-/// 名推导（双模态）。`Default` 便于 adapter 用 `get_or_insert_default()` 先占位后填字段。
+/// 名推导（双模态）。`response_mime_type` / `response_schema` 由 adapter 从
+/// `UnifiedTextFormat`（`text.format`）注入，承载结构化输出（JSON schema）；二者皆
+/// `Option`，仅在请求带 `format` 时填充。`Default` 便于 adapter 用
+/// `get_or_insert_default()` 先占位后填字段。
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -738,6 +741,14 @@ pub struct GeminiGenerationConfig {
     pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "thinkingConfig")]
     pub thinking_config: Option<GeminiThinkingConfig>,
+    /// 结构化输出 MIME：带 `text.format` 时固定 `application/json`，指示 Gemini 输出 JSON。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "responseMimeType")]
+    pub response_mime_type: Option<String>,
+    /// 结构化输出 schema：`text.format.schema` 经 strip 禁键 + sanitize 后填入。
+    /// Gemini responseSchema 仅认 OpenAPI 3.0 子集，须先剥 `$schema`/`title`/`$defs`/
+    /// `$ref`/`default`/`examples` 再过工具参数同款 `sanitize_gemini_schema`。
+    #[serde(skip_serializing_if = "Option::is_none", rename = "responseSchema")]
+    pub response_schema: Option<Value>,
 }
 
 /// Gemini generateContent 顶层请求体（wire）。

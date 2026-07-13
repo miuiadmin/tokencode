@@ -110,6 +110,52 @@ impl From<UnifiedRequest> for GeminiApiRequest {
     }
 }
 
+/// 剥除 Gemini responseSchema 不认的 JSON Schema 键（用于结构化输出，区别于工具参数）。
+///
+/// Gemini `responseSchema` 只认 OpenAPI 3.0 子集，下列键会被服务端拒（400）：
+/// - `$schema`：JSON Schema draft 声明，OpenAPI 无此字段。
+/// - `title`：OpenAPI Schema 不带 title。
+/// - `$defs` / `$ref`：OpenAPI 用 `components.schemas` + `$ref` 语义不同，Gemini responseSchema
+///   不做引用解析，含 `$ref` 直接拒；`$defs` 是纯定义容器，Gemini 不消费。
+/// - `default` / `examples`：responseSchema 不支持默认值与样例。
+///
+/// 递归剥除后，再交给 [`sanitize_gemini_schema`] 做工具参数同款的 enum stringify / array
+/// items 补全 / 非容器剥 properties 等清洗。两者顺序固定：先 strip（移除禁键）再 sanitize
+/// （规整 Gemini 专属形态）。
+///
+/// 仅用于结构化输出（`generationConfig.responseSchema`）；工具参数（`functionDeclarations`）
+/// 仅需 `sanitize_gemini_schema`，不走本函数。
+fn strip_gemini_response_schema_keys(schema: &mut Value) {
+    match schema {
+        Value::Object(obj) => {
+            // 先剥自身禁键，再递归 properties / items / array items（schema 嵌套点）。
+            obj.remove("$schema");
+            obj.remove("title");
+            obj.remove("$defs");
+            obj.remove("$ref");
+            obj.remove("default");
+            obj.remove("examples");
+            if let Some(props) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
+                for v in props.values_mut() {
+                    strip_gemini_response_schema_keys(v);
+                }
+            }
+            if let Some(items) = obj.get_mut("items") {
+                strip_gemini_response_schema_keys(items);
+            }
+            // enum / required / allOf 等数组型容器内的元素多为字面量，不递归（非 schema 节点）。
+            // definitions（draft 旧名）若残留一并剥。
+            obj.remove("definitions");
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                strip_gemini_response_schema_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 清洗 JSON Schema 使其符合 Gemini 工具参数校验（Gemini 比 OpenAI/Anthropic 严格，不做会 400）。
 ///
 /// 四件套（递归）：
@@ -558,19 +604,31 @@ impl<T: HttpTransport> LanguageModel for GeminiAdapter<T> {
         options: UnifiedRequestOptions,
     ) -> BoxFuture<'_, Result<UnifiedEventStream, UnifiedError>> {
         Box::pin(async move {
-            // 先取出 effort + model（request.into() 会消费 request）：model 用于推导 thinking 双模态
-            // 分叉 + 构造 URL path（Gemini model 在 path 不在 body）。
+            // 先取出 effort + model + text_format（request.into() 会消费 request）：model 用于推导
+            // thinking 双模态分叉 + 构造 URL path（Gemini model 在 path 不在 body）；text_format
+            // 用于结构化输出（responseMimeType + responseSchema）。
             let effort = request.reasoning.as_ref().and_then(|r| r.effort.clone());
             let model = request.model.clone();
+            let text_format = request.text.as_ref().and_then(|t| t.format.clone());
             // 中立请求 → Gemini wire 请求（翻译表 + 既有 From；generation_config 此时为 None）。
             let mut api_request: GeminiApiRequest = request.into();
-            // 注入 generation_config（thinking_config 双模态 + max_output_tokens）。
+            // 注入 generation_config（thinking_config 双模态 + max_output_tokens + 结构化输出）。
             let generation_cfg = api_request
                 .generation_config
                 .get_or_insert_with(Default::default);
             generation_cfg.thinking_config = thinking_config_from_effort(effort, &model);
             if let Some(max) = self.max_output_tokens {
                 generation_cfg.max_output_tokens = Some(max);
+            }
+            // 结构化输出：带 text.format → responseMimeType=application/json + responseSchema。
+            // 先 strip 禁键（$schema/title/$defs/$ref/default/examples，Gemini responseSchema 不认）
+            // 再过 sanitize_gemini_schema（enum stringify / array items / 剥非容器 properties 等）。
+            if let Some(fmt) = text_format {
+                let mut schema = fmt.schema;
+                strip_gemini_response_schema_keys(&mut schema);
+                sanitize_gemini_schema(&mut schema);
+                generation_cfg.response_mime_type = Some("application/json".to_string());
+                generation_cfg.response_schema = Some(schema);
             }
             let api_options: ResponsesOptions = options.into();
             // 委托 GeminiClient；空-contents 守卫由 client 层 stream_request 承担（保护所有调用方），
