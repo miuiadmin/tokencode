@@ -84,6 +84,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         model_messages: local_personality_messages_for_slug(slug),
         include_skills_usage_instructions: false,
         supports_reasoning_summaries: false,
+        supports_reasoning_effort: None,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
         default_verbosity: None,

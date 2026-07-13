@@ -171,7 +171,10 @@ impl TurnContext {
     }
 
     pub(crate) fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
-        if self.model_info.supports_reasoning_summaries {
+        // 与 build_reasoning 一致：以 supports_reasoning_effort() 为准（覆盖
+        // OpenAI reasoning 模型 + Anthropic/Gemini 推理模型），不再误闸在
+        // Responses 专属的 supports_reasoning_summaries 上。
+        if self.model_info.supports_reasoning_effort() {
             self.reasoning_effort
                 .clone()
                 .or_else(|| self.model_info.default_reasoning_level.clone())

@@ -376,6 +376,15 @@ pub struct ModelInfo {
     #[serde(default)]
     pub include_skills_usage_instructions: bool,
     pub supports_reasoning_summaries: bool,
+    /// 该模型是否接受 reasoning effort 配置（如 OpenAI reasoning 模型、
+    /// Anthropic extended thinking、Gemini thinkingBudget）。
+    ///
+    /// `None` 时回落到 `supports_reasoning_summaries`——既有 OpenAI 目录条目
+    /// 无需改动即保持原行为；非 OpenAI 的推理模型（Claude / Gemini）显式置
+    /// `Some(true)`，使其 thinking 强度可由 `effort` 驱动（与 Responses 专属的
+    /// summaries 概念解耦）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning_effort: Option<bool>,
     #[serde(default)]
     pub default_reasoning_summary: ReasoningSummary,
     pub support_verbosity: bool,
@@ -609,6 +618,18 @@ impl ModelPreset {
 }
 
 impl ModelInfo {
+    /// 该模型是否接受 reasoning effort 配置。未显式声明（`None`）时回落到
+    /// `supports_reasoning_summaries`，保持既有 OpenAI 目录行为不变。
+    ///
+    /// 与 `supports_reasoning_summaries`（Responses 专属的摘要能力）解耦：
+    /// 非 OpenAI 推理协议（Anthropic / Gemini）在目录里置
+    /// `supports_reasoning_effort = Some(true)` 即可让 thinking 强度由 `effort`
+    /// 驱动，而不必（也不应）同时声称支持 Responses 摘要。
+    pub fn supports_reasoning_effort(&self) -> bool {
+        self.supports_reasoning_effort
+            .unwrap_or(self.supports_reasoning_summaries)
+    }
+
     pub fn supports_service_tier(&self, service_tier: &str) -> bool {
         self.service_tiers
             .iter()
@@ -676,6 +697,7 @@ mod tests {
             model_messages: spec,
             include_skills_usage_instructions: false,
             supports_reasoning_summaries: false,
+            supports_reasoning_effort: None,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
             default_verbosity: None,
@@ -773,6 +795,32 @@ mod tests {
                 ..Default::default()
             })
         );
+    }
+
+    #[test]
+    fn supports_reasoning_effort_inherits_or_overrides_summaries() {
+        // None 回落到 summaries：OpenAI 目录（summaries=true）保持 effort 可配。
+        let mut openai = test_model(None);
+        openai.supports_reasoning_summaries = true;
+        openai.supports_reasoning_effort = None;
+        assert!(openai.supports_reasoning_effort());
+
+        // None + summaries=false → 不可配（默认 test_model 形态）。
+        let non_openai_default = test_model(None);
+        assert!(!non_openai_default.supports_reasoning_effort());
+
+        // Some(true) 显式开启：非 OpenAI 推理协议（Anthropic/Gemini）置此值，
+        // 即便 summaries=false，effort 仍可驱动 thinking 强度。
+        let mut anthropic = test_model(None);
+        anthropic.supports_reasoning_summaries = false;
+        anthropic.supports_reasoning_effort = Some(true);
+        assert!(anthropic.supports_reasoning_effort());
+
+        // Some(false) 显式关闭，即便 summaries=true 也不可配。
+        let mut disabled = test_model(None);
+        disabled.supports_reasoning_summaries = true;
+        disabled.supports_reasoning_effort = Some(false);
+        assert!(!disabled.supports_reasoning_effort());
     }
 
     #[test]

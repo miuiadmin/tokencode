@@ -809,21 +809,32 @@ impl ModelClient {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
     ) -> Option<Reasoning> {
-        if model_info.supports_reasoning_summaries {
+        // effort 段：任何接受 reasoning effort 的模型都填（OpenAI reasoning 模型，
+        // 以及 Anthropic extended thinking / Gemini thinkingBudget 等非 OpenAI
+        // 推理模型）。adapter 把通用 effort 翻译为各家 thinking 强度，故 harness
+        // 只要在模型声明支持时下发即可——与 Responses 专属的 summary 概念解耦。
+        let effort = if model_info.supports_reasoning_effort() {
+            effort
+                .or_else(|| model_info.default_reasoning_level.clone())
+                .map(reasoning_effort_for_request)
+        } else {
+            None
+        };
+        // summary / context 段：Responses 专属语义，仅在模型支持 Responses
+        // reasoning 摘要时填写；非 OpenAI 协议无此概念，留空。
+        let summary = if model_info.supports_reasoning_summaries && summary != ReasoningSummaryConfig::None {
+            Some(summary)
+        } else {
+            None
+        };
+        let context = model_info
+            .use_responses_lite
+            .then_some(ReasoningContext::AllTurns);
+        if effort.is_some() || summary.is_some() || context.is_some() {
             Some(Reasoning {
-                effort: effort
-                    .or_else(|| model_info.default_reasoning_level.clone())
-                    .map(reasoning_effort_for_request),
-                summary: if summary == ReasoningSummaryConfig::None {
-                    None
-                } else {
-                    Some(summary)
-                },
-                // When Responses Lite is disabled, omit context so Responses uses the default,
-                // which is currently `current_turn`.
-                context: model_info
-                    .use_responses_lite
-                    .then_some(ReasoningContext::AllTurns),
+                effort,
+                summary,
+                context,
             })
         } else {
             None
@@ -872,7 +883,10 @@ impl ModelClient {
             (prompt.base_instructions.text.clone(), Some(tools))
         };
         let reasoning = Self::build_reasoning(model_info, effort, summary);
-        let include = if reasoning.is_some() {
+        // `include` 仅对 Responses 协议有意义（`reasoning.encrypted_content` 是
+        // Responses 服务端加密 reasoning 回传机制）。非 Responses 协议即便下发了
+        // reasoning effort，也不应附带此 Responses 专属 include 项。
+        let include = if reasoning.is_some() && model_info.supports_reasoning_summaries {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
             Vec::new()
