@@ -737,7 +737,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 fn auth_request_telemetry_context_tracks_attached_auth() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
-        &BearerAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
+        &BearerAuthProvider::for_test(Some("access-token")),
         /*agent_identity_telemetry*/ None,
     );
 
@@ -750,7 +750,7 @@ fn auth_request_telemetry_context_tracks_attached_auth() {
 fn auth_request_telemetry_context_tracks_agent_identity_ids() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
-        &BearerAuthProvider::for_test(/*token*/ None, /*account_id*/ None),
+        &BearerAuthProvider::for_test(/*token*/ None),
         Some(AgentIdentityTelemetry {
             agent_id: "agent-runtime-context".to_string(),
             task_id: "task-run-context".to_string(),

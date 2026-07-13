@@ -123,8 +123,6 @@ use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
-use codex_model_provider::AgentIdentitySessionFallback;
-use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 #[cfg(test)]
@@ -211,7 +209,6 @@ struct ModelClientState {
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
-    agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
 
@@ -251,6 +248,8 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    // 待 P6 agent-identity 裁决后统一处理；本阶段不再读取，仅保留构造入参以最小化 ripple。
+    #[allow(dead_code)]
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_override: Option<String>,
 }
@@ -453,7 +452,6 @@ impl ModelClient {
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
-                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
             agent_identity_policy,
@@ -944,7 +942,7 @@ impl ModelClient {
 
     /// 按指定 provider 解析 auth + provider 配置（支持 turn 级 provider 解析）。
     ///
-    /// `session_source` / `agent_identity_*` 仍取自会话 state（不随模型切换），
+    /// `session_source` 仍取自会话 state（不随模型切换），
     /// 只有 provider 相关部分用传入的 provider。
     async fn current_client_setup_with(
         &self,
@@ -952,13 +950,7 @@ impl ModelClient {
     ) -> Result<CurrentClientSetup> {
         let auth = provider.auth().await;
         let api_provider = provider.api_provider().await?;
-        let resolved_auth = provider
-            .api_auth_for_scope(ProviderAuthScope {
-                agent_identity_policy: self.agent_identity_policy,
-                session_source: self.state.session_source.clone(),
-                agent_identity_session_fallback: self.state.agent_identity_session_fallback.clone(),
-            })
-            .await?;
+        let resolved_auth = provider.api_auth_for_scope().await?;
         Ok(CurrentClientSetup {
             auth,
             api_provider,
