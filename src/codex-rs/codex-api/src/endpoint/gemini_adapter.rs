@@ -27,6 +27,7 @@ use crate::common::GeminiToolConfig;
 use crate::common::GeminiToolDeclaration;
 use codex_language_model::UnifiedRequest;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::ToolName;
 use serde_json::Value;
@@ -285,14 +286,43 @@ fn translate_item(
             let name = tool_name_by_call_id.get(&call_id).cloned();
             push_function_response(contents, call_id, output.body.to_text(), output.success, name);
         }
+        ResponseItem::Reasoning { content, continuity_token, .. } => {
+            // 仅带 Gemini thoughtSignature（continuity_token 承载）的思考才可回喂——无签名的推理项
+            // 无 Gemini 连续凭证，跳过。文本取 content 的 ReasoningText/Text 拼接（OpenAI
+            // encrypted_content 走自家字段，与此无关）。回喂为 model 角色的 Thought part（thought:true
+            // + thoughtSignature），随后同 turn 的 Message/FunctionCall 因同角色并入同一 model 消息。
+            let Some(signature) = continuity_token else {
+                return;
+            };
+            let thought_text = content
+                .map(|cs| {
+                    cs.into_iter()
+                        .filter_map(|c| match c {
+                            ReasoningItemContent::ReasoningText { text }
+                            | ReasoningItemContent::Text { text } => Some(text),
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            if thought_text.is_empty() {
+                return;
+            }
+            append_parts(
+                contents,
+                "model",
+                vec![GeminiPart::Thought {
+                    thought: true,
+                    text: thought_text,
+                    thought_signature: Some(signature),
+                }],
+            );
+        }
         // 以下变体 Gemini 无等价或不可解码：一律跳过（与 Anthropic adapter 对齐）。
-        // - Reasoning：encrypted_content 不可回喂，Gemini 思考流是单向输出。
         // - AgentMessage / LocalShellCall / ToolSearchCall / ToolSearchOutput / WebSearchCall /
         //   ImageGenerationCall / Compaction / ContextCompaction / CompactionTrigger /
         //   AdditionalTools：Responses 专属 / 多 agent / 压缩 / 控制项。
         // - Other：未知透传项。
-        ResponseItem::Reasoning { .. }
-        | ResponseItem::AgentMessage { .. }
+        ResponseItem::AgentMessage { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::ToolSearchOutput { .. }

@@ -22,6 +22,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::ToolName;
@@ -134,8 +135,16 @@ struct GeminiUsageAccumulator {
 struct GeminiStreamState {
     /// 是否已发过 `Created`。
     created_emitted: bool,
-    /// 是否已发过 `OutputItemAdded(Message)`（文本/思考增量前置需要 active item）。
+    /// 是否已发过 `OutputItemAdded(Message)`（文本增量前置需要 active item）。
     message_item_added: bool,
+    /// 是否已发过 `OutputItemAdded(Reasoning)`（思考增量前置需要 active item）。
+    reasoning_added: bool,
+    /// 思考是否已收尾（`OutputItemDone(Reasoning)` 已发）。幂等守卫：边界与 flush 均调用 finalize。
+    reasoning_finalized: bool,
+    /// 累积的思考文本（多 thought part 拼接），finalize 时随 Reasoning 回灌。
+    thought_text: String,
+    /// 该 turn 的 thoughtSignature（跨 turn 连续凭证）；多 part 取末个，折叠为单 Reasoning。
+    thought_signature: Option<String>,
     assistant_text: String,
     /// functionCall part 按出现顺序累积（输出顺序确定）。
     tool_calls: Vec<ToolCallAccumulator>,
@@ -272,6 +281,11 @@ async fn process_part(
 ) -> bool {
     // functionCall part：工具调用（通常一帧完整）。发 placeholder（OutputItemAdded）+ 累积完整 args。
     if let Some(function_call) = part.get("functionCall") {
+        // 工具调用前先收尾思考：若前序有未 Done 的 Reasoning active item，此处 Added(FunctionCall)
+        // 会覆盖它致 Reasoning 孤儿。先 finalize 把 Reasoning 收掉，active item 干净过渡到 FunctionCall。
+        if !finalize_thinking(state, tx_event).await {
+            return false;
+        }
         let name = function_call
             .get("name")
             .and_then(|v| v.as_str())
@@ -304,19 +318,21 @@ async fn process_part(
         return true;
     }
 
-    // text part：thought=true → ReasoningContentDelta；否则 → OutputTextDelta（累积）。
+    // text part：thought=true → ReasoningContentDelta（建立 Reasoning active item + 累积 + 读签名）；
+    // thought=false → OutputTextDelta（先收尾思考、建立 Message active item、累积文本）。
     let is_thought = part
         .get("thought")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if let Some(text) = part.get("text").and_then(|v| v.as_str())
-        && !text.is_empty()
-    {
-        if !ensure_message_item(state, tx_event).await {
+    if is_thought {
+        // 思考 part：建立 Reasoning active item（仅一次 Added），流式显示 + 累积文本 + 捕获 thoughtSignature。
+        if !ensure_reasoning_item(state, tx_event).await {
             return false;
         }
-        if is_thought {
-            // 思考增量：归一为 ReasoningContentDelta（与其他协议推理增量对齐）。
+        if let Some(text) = part.get("text").and_then(|v| v.as_str())
+            && !text.is_empty()
+        {
+            // 思考增量：归一为 ReasoningContentDelta（与其他协议推理增量对齐），同时累积供 finalize 回灌。
             if send(
                 tx_event,
                 Ok(ResponseEvent::ReasoningContentDelta {
@@ -328,16 +344,33 @@ async fn process_part(
             {
                 return false;
             }
-        } else {
-            state.assistant_text.push_str(text);
-            if send(
-                tx_event,
-                Ok(ResponseEvent::OutputTextDelta(text.to_string())),
-            )
-            .await
-            {
-                return false;
-            }
+            state.thought_text.push_str(text);
+        }
+        // thoughtSignature：跨 turn 思考连续凭证。多 thought part 各带签名时取末个，折叠为单 Reasoning。
+        if let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str()) {
+            state.thought_signature = Some(sig.to_string());
+        }
+        return true;
+    }
+
+    // 普通 text part：先收尾思考（若有未 Done 的 Reasoning，避免 Added(Message) 覆盖它），再建立 Message。
+    if let Some(text) = part.get("text").and_then(|v| v.as_str())
+        && !text.is_empty()
+    {
+        if !finalize_thinking(state, tx_event).await {
+            return false;
+        }
+        if !ensure_message_item(state, tx_event).await {
+            return false;
+        }
+        state.assistant_text.push_str(text);
+        if send(
+            tx_event,
+            Ok(ResponseEvent::OutputTextDelta(text.to_string())),
+        )
+        .await
+        {
+            return false;
         }
     }
 
@@ -389,11 +422,81 @@ async fn ensure_message_item(
     true
 }
 
-/// 在 EOF 一次性装配并发出收尾事件：`OutputItemDone(Message)` → `OutputItemDone(FunctionCall)`× → `Completed`。
+/// 首次出现思考 part 时，发一次 `OutputItemAdded(Reasoning)` 建立 active item。
+///
+/// 与 `ensure_message_item` 平行：思考增量阶段 active item 是 Reasoning（非 Message），故 core 的
+/// `ReasoningContentDelta` 处理能取到带 id 的 active item。仅发一次（`reasoning_added` 守卫）。
+async fn ensure_reasoning_item(
+    state: &mut GeminiStreamState,
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) -> bool {
+    if state.reasoning_added {
+        return true;
+    }
+    let item = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: None,
+        encrypted_content: None,
+        continuity_token: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    if send(tx_event, Ok(ResponseEvent::OutputItemAdded(item))).await {
+        return false;
+    }
+    state.reasoning_added = true;
+    true
+}
+
+/// 在思考→文本/工具调用边界（或 EOF）收尾思考：发一次 `OutputItemDone(Reasoning)`。
+///
+/// 幂等：已收尾（`reasoning_finalized`）或从未建过 Reasoning（`reasoning_added`）时直接返回。
+/// 仅当累积到思考文本时才发 Done（Reasoning）——content 装填 `ReasoningText`，`continuity_token`
+/// 装填 `thoughtSignature`（无签名时 None：finalize 仍发出以保持 active item 生命周期干净，
+/// 但 adapter 回放时无签名会跳过，即该 turn 思考不跨 turn 连续）。Gemini 无 Anthropic 的
+/// redacted_thinking 整组约束，故无 `had_redacted` 守卫。
+///
+/// 多 thought part 各带独立 signature 时，v1 折叠为单 Reasoning（合并文本 + 末个 signature）。
+async fn finalize_thinking(
+    state: &mut GeminiStreamState,
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) -> bool {
+    if state.reasoning_finalized || !state.reasoning_added {
+        state.reasoning_finalized = true;
+        return true;
+    }
+    state.reasoning_finalized = true;
+    let text = std::mem::take(&mut state.thought_text);
+    if text.is_empty() {
+        return true;
+    }
+    let signature = state.thought_signature.take();
+    let reasoning = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: Some(vec![ReasoningItemContent::ReasoningText { text }]),
+        encrypted_content: None,
+        continuity_token: signature,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    if send(tx_event, Ok(ResponseEvent::OutputItemDone(reasoning))).await {
+        return false;
+    }
+    true
+}
+
+/// 在 EOF 一次性装配并发出收尾事件：`OutputItemDone(Reasoning)`（若有思考）→
+/// `OutputItemDone(Message)` → `OutputItemDone(FunctionCall)`× → `Completed`。
 async fn flush(
     state: &mut GeminiStreamState,
     tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
+    // 0. 收尾思考（若纯思考无文本/工具调用，前序未触发边界 finalize，在此补发 Done(Reasoning)）。
+    //    先于 Message/FunctionCall，保证存储序为 [reasoning, text, tool_use]。
+    if !finalize_thinking(state, tx_event).await {
+        return;
+    }
+
     // 1. assistant 文本消息收尾（仅当确实累积到文本；纯思考无文本时不发 Message）。
     if state.message_item_added && !state.assistant_text.is_empty() {
         let message = ResponseItem::Message {

@@ -671,9 +671,16 @@ pub struct GeminiFunctionResponse {
 #[serde(untagged)]
 pub enum GeminiPart {
     /// 思考片段（`includeThoughts:true` 时模型返回；`thought:true` 标记 + 文本）。
+    ///
+    /// `thought_signature` 承载 Gemini 的 `thoughtSignature`（跨 turn 思考连续凭证）。仅在 adapter
+    /// 回放历史思考时由 `ResponseItem::Reasoning`（`continuity_token` 还原）填入；首 turn 无签名时
+    /// 缺席（`skip_serializing_if`）。回喂历史思考须带 `thought:true` + `thoughtSignature`，缺一会被
+    /// 服务端拒。
     Thought {
         thought: bool,
         text: String,
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     /// 纯文本块。
     Text {

@@ -38,6 +38,7 @@ use codex_language_model::UnifiedTextControls;
 use codex_language_model::UnifiedTextFormat;
 use codex_language_model::UnifiedTextFormatType;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use futures::StreamExt;
@@ -438,6 +439,39 @@ async fn fixture_thought_part_becomes_reasoning() {
         })
         .collect();
     assert_eq!(reasoning, vec!["先思考"], "思考增量序列: {evs:?}");
+    // 思考 flush 产 OutputItemDone(Reasoning)：content 为 ReasoningText（思考文本），continuity_token=None
+    // （本用例 thought part 无 thoughtSignature，无跨 turn 连续凭证）。
+    let reasoning_done = evs.iter().find(|ev| matches!(
+        ev,
+        UnifiedEvent::OutputItemDone(ResponseItem::Reasoning { .. })
+    ));
+    let reasoning_done = match reasoning_done {
+        Some(UnifiedEvent::OutputItemDone(ResponseItem::Reasoning {
+            content, continuity_token, ..
+        })) => (content.clone(), continuity_token.clone()),
+        other => panic!("应有思考的 OutputItemDone(Reasoning)，实际: {other:?}"),
+    };
+    assert_eq!(
+        reasoning_done.0,
+        Some(vec![ReasoningItemContent::ReasoningText {
+            text: "先思考".to_string()
+        }]),
+        "Reasoning content 应为 ReasoningText(先思考): {evs:?}"
+    );
+    assert_eq!(reasoning_done.1, None, "无 thoughtSignature → continuity_token=None");
+    // 思考 Done 必须先于 Message Done（存储序 [reasoning, text]）。
+    let reasoning_done_idx = evs
+        .iter()
+        .position(|ev| matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Reasoning { .. })))
+        .expect("应有 Reasoning Done");
+    let message_done_idx = evs
+        .iter()
+        .position(|ev| matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Message { .. })))
+        .expect("应有 Message Done");
+    assert!(
+        reasoning_done_idx < message_done_idx,
+        "Reasoning Done 必须先于 Message Done: {evs:?}"
+    );
     // 普通 text part → OutputTextDelta（思考文本不混入）。
     let text_deltas: Vec<&str> = evs
         .iter()
@@ -460,6 +494,114 @@ async fn fixture_thought_part_becomes_reasoning() {
         }
         other => panic!("应存在 Completed 事件，实际: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn fixture_thought_signature_captured_as_continuity_token() {
+    // thoughtSignature 捕获：thought part 带 thoughtSignature → Reasoning 的 continuity_token = 该签名。
+    // 验证跨 turn 思考连续凭证被捕获进中立承载字段（而非在 SSE 解析期丢弃）。
+    let events = vec![json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    {"thought": true, "text": "先分析", "thoughtSignature": "sig-xyz"},
+                    {"text": "结论"}
+                ]
+            },
+            "index": 0,
+            "finishReason": "STOP"
+        }]
+    })];
+    let (evs, err) = run(build_gemini_body(&events)).await;
+    assert!(err.is_none(), "带签名的思考流不应有错误：{evs:?}");
+
+    // Reasoning continuity_token == thoughtSignature（跨 turn 凭证未丢弃）。
+    let (content, continuity) = evs
+        .iter()
+        .find_map(|ev| match ev {
+            UnifiedEvent::OutputItemDone(ResponseItem::Reasoning {
+                content,
+                continuity_token,
+                ..
+            }) => Some((content.clone(), continuity_token.clone())),
+            _ => None,
+        })
+        .expect("应有 Reasoning Done");
+    assert_eq!(
+        continuity.as_deref(),
+        Some("sig-xyz"),
+        "continuity_token 应为 thoughtSignature"
+    );
+    assert_eq!(
+        content,
+        Some(vec![ReasoningItemContent::ReasoningText {
+            text: "先分析".to_string()
+        }]),
+        "Reasoning content 应为思考文本"
+    );
+    // 文本与思考分离：assistant Message 只含 "结论"。
+    expect_assistant_text(&evs, "结论");
+}
+
+#[tokio::test]
+async fn fixture_multi_chunk_thought_folds_to_single_reasoning() {
+    // 多 thought part 各带签名时，v1 折叠为单 Reasoning（合并文本 + 末个 signature）。
+    // Gemini 流式思考常分多 chunk，signature 挂在末 chunk——本用例覆盖该真实形态。
+    let events = vec![json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    {"thought": true, "text": "片段一", "thoughtSignature": "sig-a"},
+                    {"thought": true, "text": "片段二", "thoughtSignature": "sig-b"}
+                ]
+            },
+            "index": 0,
+            "finishReason": "STOP"
+        }]
+    })];
+    let (evs, err) = run(build_gemini_body(&events)).await;
+    assert!(err.is_none(), "多段思考流不应有错误：{evs:?}");
+
+    // 仅一个 Reasoning Done（合并文本 + 末个 signature）。
+    let reasoning_dones: Vec<_> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            UnifiedEvent::OutputItemDone(ResponseItem::Reasoning {
+                content,
+                continuity_token,
+                ..
+            }) => Some((content.clone(), continuity_token.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning_dones.len(), 1, "多段思考折叠为单 Reasoning: {evs:?}");
+    let (content, continuity) = &reasoning_dones[0];
+    assert_eq!(
+        content,
+        &Some(vec![ReasoningItemContent::ReasoningText {
+            text: "片段一片段二".to_string()
+        }]),
+        "多段思考文本应拼接"
+    );
+    assert_eq!(continuity.as_deref(), Some("sig-b"), "多 signature 取末个");
+    // 两条 ReasoningContentDelta 仍逐条流式显示（不折叠 live 增量）。
+    let deltas: Vec<&str> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            UnifiedEvent::ReasoningContentDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, vec!["片段一", "片段二"]);
+    // 纯思考无文本 → 无 assistant Message。
+    assert!(
+        !evs
+            .iter()
+            .any(|ev| matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Message { .. }))),
+        "纯思考无文本不应产 Message: {evs:?}"
+    );
 }
 
 #[tokio::test]
@@ -726,6 +868,178 @@ fn request_translation_sanitizes_integer_enum_and_emits_tool_config() {
         .and_then(|f| f.get("mode"))
         .and_then(|v| v.as_str());
     assert_eq!(mode, Some("AUTO"), "tool_choice=auto + tools 非空 → mode=AUTO");
+}
+
+/// 回放：历史 Reasoning（continuity_token 承载 thoughtSignature + content）→ wire 末 turn 含
+/// `{thought:true, text, thoughtSignature}` part；同 turn assistant Message 文本因同角色并入同一
+/// model 消息（得 [thought, text] 顺序）。这是跨 turn 思考连续性的回喂路径。
+#[test]
+fn replay_reasoning_with_signature_emits_thought_part() {
+    let request = UnifiedRequest {
+        model: "gemini-2.5-pro".to_string(),
+        instructions: String::new(),
+        input: vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "继续".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            // 带 signature 的历史思考（continuity_token 承载 thoughtSignature）。
+            ResponseItem::Reasoning {
+                id: None,
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: "上一轮的思考".to_string(),
+                }]),
+                encrypted_content: None,
+                continuity_token: Some("sig-prev".to_string()),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            // 同 turn 的 assistant 文本 → 同角色并入同一 model 消息。
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "上一轮的结论".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let api_request: GeminiApiRequest = request.into();
+    let json = serde_json::to_value(&api_request).expect("应可序列化");
+    let contents = json
+        .get("contents")
+        .and_then(|c| c.as_array())
+        .expect("应有 contents");
+
+    // 末条 model 消息含 [thought part, text part]（同角色合并）。
+    let model_turn = contents
+        .iter()
+        .rev()
+        .find(|c| c.get("role").and_then(|v| v.as_str()) == Some("model"))
+        .expect("应有 model 消息");
+    let parts = model_turn
+        .get("parts")
+        .and_then(|p| p.as_array())
+        .expect("model 消息应有 parts");
+    assert!(parts.len() >= 2, "应含 thought + text 两个 part: {parts:?}");
+
+    // ① thought part（thought:true + 文本 + thoughtSignature）。
+    let thought_part = &parts[0];
+    assert_eq!(
+        thought_part.get("thought").and_then(|v| v.as_bool()),
+        Some(true),
+        "首个 part 应为 thought"
+    );
+    assert_eq!(
+        thought_part.get("text").and_then(|v| v.as_str()),
+        Some("上一轮的思考")
+    );
+    assert_eq!(
+        thought_part.get("thoughtSignature").and_then(|v| v.as_str()),
+        Some("sig-prev"),
+        "thoughtSignature 应来自 continuity_token"
+    );
+
+    // ② text part（同 turn 文本并入；thought 标记缺席）。
+    let text_part = &parts[1];
+    assert_eq!(
+        text_part.get("text").and_then(|v| v.as_str()),
+        Some("上一轮的结论")
+    );
+    assert!(
+        text_part.get("thought").is_none(),
+        "文本 part 不应带 thought 标记"
+    );
+}
+
+/// 无 continuity_token 的 Reasoning 不回喂（无 Gemini thoughtSignature 连续凭证，回喂会被服务端拒）。
+#[test]
+fn replay_reasoning_without_signature_is_skipped() {
+    let request = UnifiedRequest {
+        model: "gemini-2.5-pro".to_string(),
+        instructions: String::new(),
+        input: vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "继续".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            // 无 signature 的思考（OpenAI encrypted_content 走自家字段，或纯文本思考）→ 跳过。
+            ResponseItem::Reasoning {
+                id: None,
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: "无凭证的思考".to_string(),
+                }]),
+                encrypted_content: None,
+                continuity_token: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "结论".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let api_request: GeminiApiRequest = request.into();
+    let json = serde_json::to_value(&api_request).expect("应可序列化");
+    // wire 中不应出现任何 thought part（无签名的思考被跳过）。
+    let has_thought = json
+        .get("contents")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|c| {
+            c.get("parts")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .any(|p| p.get("thought").and_then(|v| v.as_bool()) == Some(true));
+    assert!(
+        !has_thought,
+        "无签名的 Reasoning 不应回喂为 thought part: {json:?}"
+    );
 }
 
 // === adapter stream 注入（thinkingConfig / maxOutputTokens）================
