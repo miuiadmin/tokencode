@@ -14,6 +14,7 @@ use crate::common::AnthropicContentBlock;
 use crate::common::AnthropicImageSource;
 use crate::common::AnthropicMessage;
 use crate::common::AnthropicSystemTextBlock;
+use crate::common::AnthropicThinking;
 use crate::common::AnthropicTool;
 use crate::common::AnthropicToolChoice;
 use crate::endpoint::anthropic::AnthropicAuth;
@@ -31,6 +32,7 @@ use codex_language_model::UnifiedRequest;
 use codex_language_model::UnifiedRequestOptions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use serde_json::json;
@@ -93,9 +95,45 @@ impl From<UnifiedRequest> for AnthropicApiRequest {
             system,
             tools,
             tool_choice,
+            // thinking 由 adapter stream 在 max_tokens 最终确定后推导（From 此处 max_tokens
+            // 仅为默认值，后续可能被 provider.max_output_tokens 覆盖，budget 须据此夹断）。
+            thinking: None,
             stream: req.stream,
         }
     }
+}
+
+/// 从中立 `ReasoningEffort` 档位推导 Anthropic extended thinking 配置。
+///
+/// 档位 → budget_tokens 映射（token 量级，均 < 默认 max_tokens=16384）：
+/// - None / Minimal / Custom(_)：不启用（不发 thinking 字段）。
+/// - Low → 1024（Anthropic 允许的最小有意义预算）。
+/// - Medium → 4096；High → 8192；XHigh → 12288；Max / Ultra → 15360。
+///
+/// Anthropic 硬约束：`budget_tokens` 须 ≥ 1024 且**严格小于** `max_tokens`（思考占用输出
+/// 预算，文本回复吃剩余）。默认 max_tokens 下档位值本就合法；若 provider 把 max_tokens 调小
+/// 使档位值越界，则夹断到 `max_tokens - 1024`（至少留 1024 给文本），夹断后不足 1024 才放弃。
+fn thinking_from_effort(
+    effort: Option<ReasoningEffort>,
+    max_tokens: u32,
+) -> Option<AnthropicThinking> {
+    let budget: u32 = match effort? {
+        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Custom(_) => return None,
+        ReasoningEffort::Low => 1024,
+        ReasoningEffort::Medium => 4096,
+        ReasoningEffort::High => 8192,
+        ReasoningEffort::XHigh => 12288,
+        ReasoningEffort::Max | ReasoningEffort::Ultra => 15360,
+    };
+    // 夹断到 max_tokens-1024（留至少 1024 给文本）；不足 1024（max_tokens 过小）则放弃。
+    let budget = budget.min(max_tokens.saturating_sub(1024));
+    if budget < 1024 {
+        return None;
+    }
+    Some(AnthropicThinking {
+        type_: "enabled".to_string(),
+        budget_tokens: budget,
+    })
 }
 
 /// 逐 `ResponseItem` 变体翻译为 Anthropic 消息内容块（或跳过）。
@@ -387,6 +425,9 @@ impl<T: HttpTransport> LanguageModel for AnthropicAdapter<T> {
         options: UnifiedRequestOptions,
     ) -> BoxFuture<'_, Result<UnifiedEventStream, UnifiedError>> {
         Box::pin(async move {
+            // 先取出 effort（request.into() 会消费 request），待 max_tokens 最终确定后推导
+            // thinking budget（budget 须 < max_tokens，故须在覆盖后再算）。
+            let effort = request.reasoning.as_ref().and_then(|r| r.effort.clone());
             // 中立请求 / 选项 → Anthropic wire 请求 / 选项（翻译表 + 既有 From）。
             let mut api_request: AnthropicApiRequest = request.into();
             // provider 显式配置的 max_output_tokens 覆盖 From 写入的 ANTHROPIC_DEFAULT_MAX_TOKENS
@@ -394,6 +435,8 @@ impl<T: HttpTransport> LanguageModel for AnthropicAdapter<T> {
             if let Some(max) = self.max_output_tokens {
                 api_request.max_tokens = max;
             }
+            // effort 档位 → thinking 配置（max_tokens 已最终确定，budget 据此夹断/放弃）。
+            api_request.thinking = thinking_from_effort(effort, api_request.max_tokens);
             let api_options: ResponsesOptions = options.into();
             // 委托 AnthropicClient；空-messages 守卫由 client 层 stream_request 承担（保护所有
             // 调用方），具体协议错误原样透传为 Passthrough，调用方可 downcast 回 ApiError。

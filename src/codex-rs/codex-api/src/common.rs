@@ -527,12 +527,28 @@ pub struct AnthropicToolChoice {
     pub disable_parallel_tool_use: Option<bool>,
 }
 
+/// Anthropic extended thinking 配置（顶层 `thinking` 字段）。
+///
+/// 形态 `{type:"enabled", budget_tokens}`：启用模型扩展思考，`budget_tokens` 为
+/// 思考 token 预算（Anthropic 约束：≥ 1024 且严格小于 `max_tokens`）。由 adapter 从
+/// 中立 `UnifiedReasoning.effort` 档位推导（None/Minimal 不启用），让 Anthropic 协议
+/// 获得与其他协议对齐的「思考强度」能力——请求侧发 `thinking`，响应侧把 `thinking_delta`
+/// 流式归一为 `ResponseEvent::ReasoningContentDelta`。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AnthropicThinking {
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub budget_tokens: u32,
+}
+
 /// Anthropic Messages 顶层请求体（wire）。
 ///
 /// 与 `ResponsesApiRequest` / `ChatApiRequest` 语义对齐但形态不同：Anthropic 用
 /// 顶层 `system` + `messages[].content[]` 内容块，工具调用/结果以 `tool_use` /
 /// `tool_result` 块承载。`max_tokens` 为 Anthropic 必填项（Responses/Chat 不传），
 /// 由 adapter 以常量默认填充（见 `anthropic_adapter::ANTHROPIC_DEFAULT_MAX_TOKENS`）。
+/// `thinking` 由 adapter 从 `UnifiedReasoning.effort` 推导（见
+/// `anthropic_adapter::thinking_from_effort`），未启用时为 None 不序列化。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AnthropicApiRequest {
     pub model: String,
@@ -544,5 +560,8 @@ pub struct AnthropicApiRequest {
     pub tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<AnthropicToolChoice>,
+    /// 扩展思考配置；None 时不序列化（不发 `thinking` 字段）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<AnthropicThinking>,
     pub stream: bool,
 }

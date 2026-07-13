@@ -28,10 +28,12 @@ use codex_language_model::LanguageModel;
 use codex_language_model::UnifiedError;
 use codex_language_model::UnifiedEvent;
 use codex_language_model::UnifiedEventStream;
+use codex_language_model::UnifiedReasoning;
 use codex_language_model::UnifiedRequest;
 use codex_language_model::UnifiedRequestOptions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use futures::StreamExt;
 use http::HeaderMap;
 use http::StatusCode;
@@ -864,4 +866,187 @@ async fn provider_max_output_tokens_drives_wire_max_tokens() {
             "provider.max_output_tokens={configured:?} 时 wire max_tokens 应为 {expected}"
         );
     }
+}
+
+/// effort 档位 → wire `thinking` 字段：发 `enabled` + budget_tokens，None/Minimal/Custom 不发。
+/// 经 CapturingTransport 捕获 adapter stream 发出的 wire 请求体，覆盖 `thinking_from_effort`
+/// 的档位→budget 映射与「不发」档位（clamp 由 max_tokens 测试的覆盖路径间接保障）。
+#[tokio::test]
+async fn reasoning_effort_drives_wire_thinking() {
+    let body = build_anthropic_body(&[
+        json!({"type": "message_start", "message": {"id": "msg_t", "model": "claude", "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+        json!({"type": "message_stop"}),
+    ]);
+    // (effort, 期望 budget_tokens；None 表示不应发 thinking 字段)
+    let cases: Vec<(Option<ReasoningEffort>, Option<u64>)> = vec![
+        (Some(ReasoningEffort::Low), Some(1_024)),
+        (Some(ReasoningEffort::Medium), Some(4_096)),
+        (Some(ReasoningEffort::High), Some(8_192)),
+        (Some(ReasoningEffort::XHigh), Some(12_288)),
+        (Some(ReasoningEffort::Max), Some(15_360)),
+        (Some(ReasoningEffort::Ultra), Some(15_360)),
+        (Some(ReasoningEffort::None), None),
+        (Some(ReasoningEffort::Minimal), None),
+        (Some(ReasoningEffort::Custom("future".to_string())), None),
+        (None, None),
+    ];
+    for (effort, expect_budget) in cases {
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let mut req = sample_unified_request();
+        req.reasoning = effort.clone().map(|e| UnifiedReasoning {
+            effort: Some(e),
+            summary: None,
+            context: None,
+        });
+        let adapter = AnthropicAdapter::new(
+            CapturingTransport::new(body.clone(), captured.clone()),
+            provider(),
+            Arc::new(NoAuth),
+        );
+        let _ = LanguageModel::stream(&adapter, req, sample_unified_options())
+            .await
+            .expect("adapter stream 不应失败");
+        let wire = captured
+            .lock()
+            .expect("capture mutex poisoned")
+            .clone()
+            .expect("应已捕获请求体");
+        let thinking = wire.get("thinking");
+        match expect_budget {
+            Some(budget) => {
+                let t = thinking
+                    .unwrap_or_else(|| panic!("effort={effort:?} 应产出 thinking 字段"));
+                assert_eq!(
+                    t.get("type").and_then(|v| v.as_str()),
+                    Some("enabled"),
+                    "effort={effort:?} thinking.type 应为 enabled"
+                );
+                assert_eq!(
+                    t.get("budget_tokens").and_then(|v| v.as_u64()),
+                    Some(budget),
+                    "effort={effort:?} budget_tokens 应为 {budget}"
+                );
+            }
+            None => assert!(
+                thinking.is_none(),
+                "effort={effort:?} 不应发 thinking，实际: {thinking:?}"
+            ),
+        }
+    }
+}
+
+/// 扩展思考 SSE 回放：`thinking_delta` 归一为 `UnifiedEvent::ReasoningContentDelta`，
+/// `signature_delta` 静默忽略（v1 不回喂思考）；text 块仍正常流式与装配。
+#[tokio::test]
+async fn fixture_thinking_delta_emits_reasoning_event() {
+    let events = vec![
+        json!({"type": "message_start", "message": {"id": "msg_th", "model": "claude", "usage": {"input_tokens": 5, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "先分析"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "问题"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig-abc"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "答案是"}}),
+        json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "42"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 8}}),
+        json!({"type": "message_stop"}),
+    ];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+
+    assert!(err.is_none(), "thinking 流不应报错：{err:?}");
+    // thinking_delta → ReasoningContentDelta（content_index=0）；signature_delta 不产事件。
+    let reasoning: Vec<&str> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            UnifiedEvent::ReasoningContentDelta { delta, content_index } => {
+                assert_eq!(*content_index, 0, "thinking 块 index=0");
+                Some(delta.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, vec!["先分析", "问题"], "thinking 增量序列: {evs:?}");
+    // text 增量仍正常（与思考共用 active item）。
+    let text: Vec<&str> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            UnifiedEvent::OutputTextDelta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, vec!["答案是", "42"], "文本增量序列: {evs:?}");
+    // 装配出 assistant 文本（thinking 不进 message content）。
+    expect_assistant_text(&evs, "答案是42");
+}
+
+/// provider.max_output_tokens 调小 → thinking budget 夹断到 `max_tokens - 1024`（留文本预算）；
+/// max_tokens 过小（不足 1024 思考 + 1024 文本）→ 放弃 thinking。
+#[tokio::test]
+async fn reasoning_effort_thinking_clamps_to_max_tokens() {
+    let body = build_anthropic_body(&[
+        json!({"type": "message_start", "message": {"id": "msg_c", "model": "claude", "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+        json!({"type": "message_stop"}),
+    ]);
+
+    // max_tokens=4096，High 档位值 8192 越界 → 夹断到 4096-1024=3072。
+    let captured = Arc::new(Mutex::new(None::<Value>));
+    let mut small_provider = provider();
+    small_provider.max_output_tokens = Some(4096);
+    let mut req = sample_unified_request();
+    req.reasoning = Some(UnifiedReasoning {
+        effort: Some(ReasoningEffort::High),
+        summary: None,
+        context: None,
+    });
+    let adapter = AnthropicAdapter::new(
+        CapturingTransport::new(body.clone(), captured.clone()),
+        small_provider,
+        Arc::new(NoAuth),
+    );
+    let _ = LanguageModel::stream(&adapter, req, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+    let wire = captured
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    let t = wire
+        .get("thinking")
+        .expect("High 档夹断后仍应发 thinking");
+    assert_eq!(
+        t.get("budget_tokens").and_then(|v| v.as_u64()),
+        Some(3072),
+        "max_tokens=4096 时 High(8192) 应夹断到 3072"
+    );
+
+    // max_tokens=1024（过小）→ High 夹断到 0（< 1024）→ 放弃 thinking。
+    let captured2 = Arc::new(Mutex::new(None::<Value>));
+    let mut provider2 = provider();
+    provider2.max_output_tokens = Some(1024);
+    let mut req2 = sample_unified_request();
+    req2.reasoning = Some(UnifiedReasoning {
+        effort: Some(ReasoningEffort::High),
+        summary: None,
+        context: None,
+    });
+    let adapter2 = AnthropicAdapter::new(
+        CapturingTransport::new(body, captured2.clone()),
+        provider2,
+        Arc::new(NoAuth),
+    );
+    let _ = LanguageModel::stream(&adapter2, req2, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+    let wire2 = captured2
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    assert!(
+        wire2.get("thinking").is_none(),
+        "max_tokens=1024 过小应放弃 thinking（无法满足 1024 思考 + 1024 文本）"
+    );
 }

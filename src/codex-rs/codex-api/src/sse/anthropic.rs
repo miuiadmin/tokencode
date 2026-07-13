@@ -337,8 +337,14 @@ async fn process_event(
                 "text" => {
                     // 文本块：首个 delta 到来时再建 active message item，此处无需操作。
                 }
+                "thinking" | "redacted_thinking" => {
+                    // 扩展思考块：thinking_delta 由后续 content_block_delta 流式归一为
+                    // ReasoningContentDelta；redacted_thinking 是服务端加密块（无可读文本），
+                    // v1 仅记录、不消费。块本身无需预建状态（delta 按 index 直发）。
+                    debug!(block_type = kind, "Anthropic 扩展思考内容块");
+                }
                 _ => {
-                    // 未知块类型（thinking / redacted_thinking 等）：v1 不消费，静默忽略。
+                    // 未知块类型：静默忽略（容错未来新块类型）。
                     debug!(block_type = kind, "跳过未知 Anthropic 内容块类型");
                 }
             }
@@ -375,6 +381,35 @@ async fn process_event(
                             }
                         }
                     }
+                }
+                "thinking_delta" => {
+                    // 扩展思考文本增量：归一为 ReasoningContentDelta（与其他协议推理增量对齐），
+                    // 让上层能看到模型思考过程。core 消费要求 active item（与 text_delta 同因），
+                    // 故先 ensure。content_index 用内容块 index。
+                    if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
+                        && !text.is_empty()
+                    {
+                        if !ensure_message_item(state, tx_event).await {
+                            return false;
+                        }
+                        let index = event.index.unwrap_or(0);
+                        if send(
+                            tx_event,
+                            Ok(ResponseEvent::ReasoningContentDelta {
+                                delta: text.to_string(),
+                                content_index: index,
+                            }),
+                        )
+                        .await
+                        {
+                            return false;
+                        }
+                    }
+                }
+                "signature_delta" => {
+                    // 思考签名增量（redacted_thinking 回喂凭证）：v1 不回喂历史思考
+                    // （adapter 不发历史 thinking 块），签名仅记录、不累积、不外发。
+                    debug!("Anthropic signature_delta（v1 不回喂思考，忽略）");
                 }
                 _ => {
                     debug!(delta_type = kind, "跳过未知 Anthropic 增量类型");
