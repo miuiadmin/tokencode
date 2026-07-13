@@ -14,6 +14,7 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -299,14 +300,18 @@ impl ContextManager {
         self.items
             .iter()
             .take(last_user_index)
-            .filter(|item| {
-                matches!(
-                    item,
-                    ResponseItem::Reasoning {
-                        encrypted_content: Some(_),
-                        ..
-                    }
-                )
+            .filter(|item| match item {
+                // 计入有「可见内容」的推理项：OpenAI 加密密文（encrypted_content）或
+                // 非 Responses 协议回填的可读思考正文（content）。后者在 M3（reasoning
+                // 跨 turn 连续性）落地后才会真正出现在历史中；在此之前本分支对 OpenAI
+                // 加密项行为不变。两者皆有的项由 estimate_item_token_count 走加密臂、
+                // content 不重复计。
+                ResponseItem::Reasoning {
+                    encrypted_content,
+                    content,
+                    ..
+                } => encrypted_content.is_some() || content.is_some(),
+                _ => false,
             })
             .map(estimate_item_token_count)
             .fold(0i64, i64::saturating_add)
@@ -512,6 +517,18 @@ fn estimate_reasoning_length(encoded_len: usize) -> usize {
         .saturating_sub(650)
 }
 
+/// 累计可读推理正文的字节长度（`ReasoningItemContent` 的文本块）。
+///
+/// 非 Responses 协议的思考文本回填为 `Reasoning.content` 的可读块，仅取其文本字节
+/// 参与估算（不与加密密文的 deflate 估算 `estimate_reasoning_length` 混淆，故各成臂）。
+fn reasoning_content_text_byte_len(content: &ReasoningItemContent) -> usize {
+    match content {
+        ReasoningItemContent::ReasoningText { text } | ReasoningItemContent::Text { text } => {
+            text.len()
+        }
+    }
+}
+
 fn estimate_encrypted_function_output_length(encoded_len: usize) -> usize {
     encoded_len.saturating_mul(9).div_ceil(16)
 }
@@ -557,6 +574,24 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
             encrypted_content: Some(content),
             ..
         } => i64::try_from(estimate_reasoning_length(content.len())).unwrap_or(i64::MAX),
+        // 非加密可读推理正文（非 Responses 协议把 thinking/thought 文本回填为
+        // Reasoning.content 的 ReasoningText/Text 块）：按文本字节估算。此处返回
+        // 「字节」，由上层 estimate_item_token_count 经 approx_tokens_from_byte_count_i64
+        // 统一折算 token（与 default 分支口径一致）；加密分支走 estimate_reasoning_length
+        // 对 base64 密文做 deflate 近似，二者口径不同，故分别成臂。
+        //
+        // 该臂的真实价值随 M3（reasoning 跨 turn 连续性中立承载点）落地后兑现——届时
+        // 非 Responses 协议的历史里才会出现带 content 的 Reasoning 项；在此之前它是
+        // 前向兼容 no-op（OpenAI 加密项仍走上臂，且 encrypted 与 content 皆有的项由
+        // 上臂优先匹配，content 不重复计）。
+        ResponseItem::Reasoning {
+            encrypted_content: None,
+            content: Some(texts),
+            ..
+        } => {
+            let text_bytes: usize = texts.iter().map(reasoning_content_text_byte_len).sum();
+            i64::try_from(text_bytes).unwrap_or(i64::MAX)
+        }
         item => {
             let raw = serde_json::to_string(item)
                 .map(|serialized| i64::try_from(serialized.len()).unwrap_or(i64::MAX))

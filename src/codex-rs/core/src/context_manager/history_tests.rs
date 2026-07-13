@@ -364,6 +364,51 @@ fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
 }
 
 #[test]
+fn non_last_reasoning_tokens_count_readable_content() {
+    // M4 泛化：非加密可读推理正文（content）也应计入预算，而非恒为 0。
+    // reasoning_msg 把思考文本回填为 content（encrypted_content=None）。
+    let thinking = "thinking about the problem step by step";
+    let history = create_history_with_items(vec![
+        reasoning_msg(thinking),
+        user_msg("boundary"),
+    ]);
+    let expected = estimate_item_token_count(&reasoning_msg(thinking));
+    assert_eq!(history.get_non_last_reasoning_items_tokens(), expected);
+    assert!(expected > 0);
+}
+
+#[test]
+fn readable_reasoning_content_estimated_by_text_bytes() {
+    // M4 新增 content 估算分支：按文本字节近似 token。
+    let text = "thinking about the problem step by step";
+    let item = reasoning_msg(text);
+    assert_eq!(
+        estimate_item_token_count(&item),
+        approx_tokens_from_byte_count_i64(i64::try_from(text.len()).unwrap()),
+    );
+    assert!(estimate_item_token_count(&item) > 0);
+}
+
+#[test]
+fn reasoning_with_both_encrypted_and_content_uses_encrypted_arm() {
+    // encrypted 与 content 皆有时走上臂（加密 deflate 估算），content 不重复计。
+    // 若误命中 content 臂，10_000 字节文本会给出与加密臂明显不同的估值。
+    let both = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: "x".repeat(10_000),
+        }]),
+        encrypted_content: Some("a".repeat(10_000)),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    assert_eq!(
+        estimate_response_item_model_visible_bytes(&both),
+        estimate_response_item_model_visible_bytes(&reasoning_with_encrypted_content(10_000)),
+    );
+}
+
+#[test]
 fn items_after_last_model_generated_tokens_include_user_and_tool_output() {
     let history = create_history_with_items(vec![
         assistant_msg("already counted by API"),
