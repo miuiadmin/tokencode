@@ -11,6 +11,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ANTHROPIC_STRUCTURED_OUTPUT_TOOL;
 use crate::common::AnthropicApiRequest;
+use crate::common::AnthropicCacheControl;
 use crate::common::AnthropicContentBlock;
 use crate::common::AnthropicImageSource;
 use crate::common::AnthropicMessage;
@@ -61,11 +62,14 @@ impl From<UnifiedRequest> for AnthropicApiRequest {
     fn from(req: UnifiedRequest) -> Self {
         // 结构化输出（text.format）：先抓取（req.text 不 move，仅读），后续 tool-mode 注入用。
         let structured = req.text.as_ref().and_then(|t| t.format.clone());
-        // instructions（非空）→ 顶层 system（数组形态，便于后续追加 cache_control）。
+        // instructions（非空）→ 顶层 system（数组形态，末块打 cache_control 缓存断点）。
+        // system 是跨 turn 稳定前缀，标 ephemeral 后首次写入 1.25x、后续命中 0.1x。
         let system = if req.instructions.is_empty() {
             None
         } else {
-            Some(vec![AnthropicSystemTextBlock::new(req.instructions.clone())])
+            let mut block = AnthropicSystemTextBlock::new(req.instructions.clone());
+            block.cache_control = Some(AnthropicCacheControl::ephemeral());
+            Some(vec![block])
         };
 
         // input: Vec<ResponseItem> → messages[]（穷尽 match，逐变体翻译；连续同角色项合并为一条消息）。
@@ -75,13 +79,18 @@ impl From<UnifiedRequest> for AnthropicApiRequest {
         }
 
         // tools：Responses 形态 {type:"function", name, parameters, ...} → Anthropic {name, description?, input_schema}。
+        // 末工具打 cache_control：工具定义是跨 turn 稳定前缀，标 ephemeral 缓存。
         let tools = req
             .tools
             .map(|tools| {
-                tools
+                let mut vec: Vec<AnthropicTool> = tools
                     .into_iter()
                     .filter_map(responses_tool_to_anthropic)
-                    .collect::<Vec<_>>()
+                    .collect();
+                if let Some(last) = vec.last_mut() {
+                    last.cache_control = Some(AnthropicCacheControl::ephemeral());
+                }
+                vec
             })
             .filter(|v| !v.is_empty());
 
@@ -104,6 +113,8 @@ impl From<UnifiedRequest> for AnthropicApiRequest {
                 name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL.to_string(),
                 description: None,
                 input_schema: fmt.schema,
+                // 结构化输出为终态单 turn（adapter 强制 end_turn），无跨 turn 复用，不打缓存断点。
+                cache_control: None,
             });
             let forced = AnthropicToolChoice {
                 type_: "tool".to_string(),
@@ -366,6 +377,8 @@ fn responses_tool_to_anthropic(tool: Value) -> Option<AnthropicTool> {
         name,
         description,
         input_schema,
+        // 缓存断点由调用方在 tools 末工具统一打（此处逐工具构造，不知是否为末个）。
+        cache_control: None,
     })
 }
 

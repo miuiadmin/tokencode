@@ -443,15 +443,40 @@ pub struct ChatApiRequest {
 /// 会被误判为 namespaced，导致派发表错位。adapter 与 parser 共用此常量，避免两侧名漂移。
 pub const ANTHROPIC_STRUCTURED_OUTPUT_TOOL: &str = "respond_structured";
 
-/// Anthropic 顶层 system 文本块（`{type:"text", text}`）。
+/// Anthropic prompt 缓存断点（`cache_control`：`{type:"ephemeral"}`）。
+///
+/// Anthropic 按请求内容前缀缓存（无 key 概念）；在稳定前缀的末元素上打 `ephemeral` 断点，
+/// 使其前的内容进入缓存。token 成本：首次写入 1.25x、后续命中 0.1x，session ≥2 turn 即净赚。
+/// Anthropic 约束单请求 ≤4 个断点——本项目固定打 2 个（system 末块 + tools 末工具），天然满足。
+/// 缓存命中要求前缀逐字节相同，故只标稳定前缀（system + tools），**不**标每 turn 变动的对话消息
+/// （标了反而会 bust 缓存 + 白付写惩罚）。adapter 始终开启，非按 `prompt_cache_key` 门控。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    type_: String,
+}
+
+impl AnthropicCacheControl {
+    /// 短命缓存断点（默认 5 分钟 TTL，命中后续请求）。本项目唯一使用的类型。
+    pub fn ephemeral() -> Self {
+        Self {
+            type_: "ephemeral".to_string(),
+        }
+    }
+}
+
+/// Anthropic 顶层 system 文本块（`{type:"text", text, cache_control?}`）。
 ///
 /// Anthropic 把系统提示放在顶层 `system` 字段（字符串或内容块数组），而非
-/// `messages[]` 里。统一用数组形态（便于后续追加 `cache_control`）。
+/// `messages[]` 里。统一用数组形态（便于在末块打 `cache_control` 缓存断点）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AnthropicSystemTextBlock {
     #[serde(rename = "type")]
     type_: String,
     text: String,
+    /// prompt 缓存断点：system 末块标 `ephemeral`（稳定前缀，跨 turn 命中）。None 不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<AnthropicCacheControl>,
 }
 
 impl AnthropicSystemTextBlock {
@@ -459,6 +484,7 @@ impl AnthropicSystemTextBlock {
         Self {
             type_: "text".to_string(),
             text,
+            cache_control: None,
         }
     }
 }
@@ -511,15 +537,18 @@ pub struct AnthropicMessage {
 
 /// Anthropic 工具描述（`tools[]` 元素）。
 ///
-/// 形态 `{name, description?, input_schema}`，与 OpenAI 的
+/// 形态 `{name, description?, input_schema, cache_control?}`，与 OpenAI 的
 /// `{type:"function", function:{name, parameters}}` 不同：无外层 function 包装，
-/// schema 字段名为 `input_schema`。
+/// schema 字段名为 `input_schema`。`cache_control` 标在 tools 末工具上以缓存稳定工具定义前缀。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AnthropicTool {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: Value,
+    /// prompt 缓存断点：tools 末工具标 `ephemeral`（稳定前缀，跨 turn 命中）。None 不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic tool_choice（`{type, name?, disable_parallel_tool_use?}`）。

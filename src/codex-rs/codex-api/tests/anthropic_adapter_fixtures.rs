@@ -545,6 +545,114 @@ fn request_translation_shapes_anthropic_wire() {
     );
 }
 
+#[test]
+fn request_translation_marks_prompt_cache_breakpoints() {
+    // prompt 缓存断点：非空 system + 非空 tools 时，system 末块与 tools 末工具各带
+    // cache_control:{type:"ephemeral"}；对话消息（tool_use / tool_result 块）不带。
+    let request = UnifiedRequest {
+        model: "claude-sonnet-5".to_string(),
+        instructions: "系统级指令".to_string(),
+        input: vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "调用工具".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "get_weather".to_string(),
+                namespace: None,
+                arguments: r#"{"city":"SF"}"#.to_string(),
+                call_id: "toolu_1".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "toolu_1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload {
+                    body: codex_protocol::models::FunctionCallOutputBody::Text("晴天".to_string()),
+                    success: None,
+                },
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: Some(vec![
+            json!({"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}),
+            json!({"type":"function","name":"get_time","parameters":{"type":"object"}}),
+        ]),
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        include: vec![],
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+
+    let api_request: AnthropicApiRequest = request.into();
+    let json = serde_json::to_value(&api_request).expect("AnthropicApiRequest 应可序列化");
+
+    // system 末块（此处仅 1 块）带 cache_control:{type:"ephemeral"}。
+    let system = json
+        .get("system")
+        .and_then(|v| v.as_array())
+        .expect("应有 system 数组");
+    assert_eq!(system.len(), 1);
+    assert_eq!(
+        system[0]
+            .get("cache_control")
+            .and_then(|c| c.get("type"))
+            .and_then(|v| v.as_str()),
+        Some("ephemeral"),
+        "system 末块应带 cache_control ephemeral"
+    );
+
+    // tools：仅末工具带 cache_control，其余工具不带（中间断点无意义且消耗 ≤4 断点额度）。
+    let tools = json
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .expect("应有 tools 数组");
+    assert_eq!(tools.len(), 2);
+    assert!(
+        tools[0].get("cache_control").is_none(),
+        "非末工具不应带 cache_control"
+    );
+    assert_eq!(
+        tools[1]
+            .get("cache_control")
+            .and_then(|c| c.get("type"))
+            .and_then(|v| v.as_str()),
+        Some("ephemeral"),
+        "tools 末工具应带 cache_control ephemeral"
+    );
+
+    // 对话消息（tool_use / tool_result 块）一律不带 cache_control：每 turn 变动，
+    // 标了反而 bust 缓存 + 白付 1.25x 写惩罚。
+    let messages = json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages 数组");
+    for (mi, msg) in messages.iter().enumerate() {
+        let blocks = msg
+            .get("content")
+            .and_then(|c| c.as_array())
+            .expect("content 应为数组");
+        for (bi, block) in blocks.iter().enumerate() {
+            assert!(
+                block.get("cache_control").is_none(),
+                "messages[{mi}].content[{bi}] 不应带 cache_control"
+            );
+        }
+    }
+}
+
 /// 取 messages[msg_idx].content[block_idx] 的 (role, block.type, 文本类字段的字符串值)。
 fn block_at(messages: &[Value], msg_idx: usize, block_idx: usize) -> (&str, &str, Option<String>) {
     let msg = &messages[msg_idx];
