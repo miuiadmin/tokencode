@@ -926,6 +926,12 @@ impl ModelClient {
             input,
             tools,
             tool_choice: "auto".to_string(),
+            // parallel_tool_calls：模型能力（`supports_parallel_tool_calls`）如实下发到中立字段，
+            // 各 adapter 翻译为自家并行语义（Anthropic 的 `disable_parallel_tool_use`、Chat 直传、
+            // Gemini 由 toolConfig 承载）。末尾 `&& !use_responses_lite` 是 OpenAI responses-lite
+            // 传输层约束（该传输不支持并行工具）；非 Responses 协议 `use_responses_lite` 恒 false，
+            // 此门对它们不生效——故无需为非 OpenAI 下移此门（adapter 不持有 model_info，下移风险高、
+            // 收益为零）。
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning,
             store: provider.is_azure_responses_endpoint(),
