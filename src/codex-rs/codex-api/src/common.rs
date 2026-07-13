@@ -499,6 +499,17 @@ impl AnthropicSystemTextBlock {
 pub enum AnthropicContentBlock {
     /// 纯文本块。
     Text { text: String },
+    /// 扩展思考块（assistant 的 thinking 内容）。
+    ///
+    /// 仅在跨 turn 回喂历史思考时由 adapter 产出：从 `ResponseItem::Reasoning`
+    /// （`continuity_token` 承载 Anthropic signature）还原。`signature` 是思考连续
+    /// 凭证，无则不序列化（首 turn 无签名的情况罕见）。wire 形如
+    /// `{"type":"thinking","thinking":"...","signature":"..."}`，对齐 Anthropic 协议。
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     /// 图片块（base64 或 url 两种来源）。
     Image { source: AnthropicImageSource },
     /// assistant 发起的工具调用（`id` 对齐 Responses `call_id`，`input` 为已解析 JSON 对象）。

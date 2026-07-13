@@ -23,6 +23,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::ToolName;
@@ -182,6 +183,24 @@ struct AnthropicStreamState {
     /// tool_choice 下 Anthropic 回 stop_reason="tool_use"，会被映射成 end_turn=false，
     /// 进而触发 core 的 needs_follow_up=true 造成循环重采样。
     structured_output_done: bool,
+    /// 是否已为本 turn 的思考发过 `OutputItemAdded(Reasoning)`（整 turn 合并为单条
+    /// Reasoning item，故只发一次）。
+    reasoning_added: bool,
+    /// 是否已收口（发过 `OutputItemDone(Reasoning)`）。收口在首个非思考块（text/tool_use）
+    /// 或 flush 时触发，确保 Done(Reasoning) 早于 Done(Message)/Done(FunctionCall)
+    /// （对齐 Anthropic wire `[thinking, text, tool_use]` 序，且不抢占后续 Message 的
+    /// active item）。idempotent：重复调用不重发。
+    reasoning_finalized: bool,
+    /// 累积的思考文本（跨多个 thinking 块合并；多数 turn 单段思考）。
+    thinking_text: String,
+    /// 思考签名（Anthropic signature，跨 turn 回喂凭证）。单段思考只有一个签名；
+    /// 多段合并只留末个（多段罕见，v1 折叠）。
+    thinking_signature: Option<String>,
+    /// 本 turn 是否出现过 redacted_thinking（安全加密思考块）。整组回放约束：Anthropic
+    /// 要求同 turn 的 thinking 块整组回放，部分回放会被服务端拒 400。redacted 无可读
+    /// 文本、其加密数据无中立承载点，v1 不回喂——故该 turn 一旦出现 redacted，整 turn
+    /// 的思考都不回喂（安全降级，无 400）。收口时已知全部低 index 思考块，守卫可靠。
+    had_redacted: bool,
 }
 
 // ===== SSE 字节循环 ==========================================================
@@ -306,6 +325,11 @@ async fn process_event(
             let index = event.index.unwrap_or(0);
             match kind {
                 "tool_use" => {
+                    // 先收口本 turn 的思考（若有）：Done(Reasoning) 必须早于 tool_use 占位
+                    // 的 Added，对齐 wire 序 `[thinking, text/tool_use]` 且不抢占 active item。
+                    if !finalize_thinking(state, tx_event).await {
+                        return false;
+                    }
                     let id = block
                         .get("id")
                         .and_then(|v| v.as_str())
@@ -345,13 +369,24 @@ async fn process_event(
                     }
                 }
                 "text" => {
-                    // 文本块：首个 delta 到来时再建 active message item，此处无需操作。
+                    // 文本块开始：先收口本 turn 的思考（若有），确保 Done(Reasoning) 早于
+                    // 文本的 active item。首个 delta 到来时再建 active message item。
+                    if !finalize_thinking(state, tx_event).await {
+                        return false;
+                    }
                 }
-                "thinking" | "redacted_thinking" => {
+                "thinking" => {
                     // 扩展思考块：thinking_delta 由后续 content_block_delta 流式归一为
-                    // ReasoningContentDelta；redacted_thinking 是服务端加密块（无可读文本），
-                    // v1 仅记录、不消费。块本身无需预建状态（delta 按 index 直发）。
+                    // ReasoningContentDelta（live 显示）并累积文本；signature_delta 捕获签名。
+                    // 整 turn 合并为单条 Reasoning item，Added 惰性在首个 thinking_delta 发。
                     debug!(block_type = kind, "Anthropic 扩展思考内容块");
+                }
+                "redacted_thinking" => {
+                    // 安全加密思考块（无可读文本、加密数据无中立承载点，v1 不回喂）。
+                    // 置守卫：收口时据此跳过整 turn 思考回喂——Anthropic 要求思考块整组
+                    // 回放，部分回放会被服务端拒 400，故有 redacted 即整 turn 不回喂。
+                    state.had_redacted = true;
+                    debug!(block_type = kind, "Anthropic 安全加密思考块（标记整组不回喂）");
                 }
                 _ => {
                     // 未知块类型：静默忽略（容错未来新块类型）。
@@ -393,15 +428,19 @@ async fn process_event(
                     }
                 }
                 "thinking_delta" => {
-                    // 扩展思考文本增量：归一为 ReasoningContentDelta（与其他协议推理增量对齐），
-                    // 让上层能看到模型思考过程。core 消费要求 active item（与 text_delta 同因），
-                    // 故先 ensure。content_index 用内容块 index。
+                    // 扩展思考文本增量：归一为 ReasoningContentDelta（live 显示，与其他协议
+                    // 推理增量对齐），同时累积文本——收口时随签名一起归一为
+                    // ResponseItem::Reasoning，使跨 turn thinking 可回喂。
+                    // core 消费 ReasoningContentDelta 要求 active item，此处用专门的
+                    // Reasoning active item（ensure_reasoning_item），与 OpenAI 路径一致：
+                    // 思考是其独立 item，不借用 Message。content_index 用内容块 index。
                     if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
                         && !text.is_empty()
                     {
-                        if !ensure_message_item(state, tx_event).await {
+                        if !ensure_reasoning_item(state, tx_event).await {
                             return false;
                         }
+                        state.thinking_text.push_str(text);
                         let index = event.index.unwrap_or(0);
                         if send(
                             tx_event,
@@ -417,9 +456,11 @@ async fn process_event(
                     }
                 }
                 "signature_delta" => {
-                    // 思考签名增量（redacted_thinking 回喂凭证）：v1 不回喂历史思考
-                    // （adapter 不发历史 thinking 块），签名仅记录、不累积、不外发。
-                    debug!("Anthropic signature_delta（v1 不回喂思考，忽略）");
+                    // 思考签名：跨 turn thinking 连续凭证（Anthropic 续思考需回喂 signature）。
+                    // 写入 thinking_signature，收口时随 Reasoning 的 continuity_token 回灌。
+                    if let Some(sig) = delta.get("signature").and_then(|v| v.as_str()) {
+                        state.thinking_signature = Some(sig.to_string());
+                    }
                 }
                 _ => {
                     debug!(delta_type = kind, "跳过未知 Anthropic 增量类型");
@@ -497,12 +538,80 @@ async fn ensure_message_item(
     true
 }
 
+/// 首个思考增量到来时，发一次 `OutputItemAdded(Reasoning)` 建立 active item（整 turn 合并
+/// 为单条，故只发一次）。与 `ensure_message_item` 同理：core 消费 `ReasoningContentDelta`
+/// 要求 active item 已存在（turn.rs 否则 error_or_panic）。用 Reasoning 而非 Message 作
+/// active item，与 OpenAI Responses 的 reasoning 路径一致，且使收口时 Done(Reasoning)
+/// 能干净切换 active item（不抢占后续 Message）。
+async fn ensure_reasoning_item(
+    state: &mut AnthropicStreamState,
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) -> bool {
+    if state.reasoning_added {
+        return true;
+    }
+    let item = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: None,
+        encrypted_content: None,
+        continuity_token: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    if send(tx_event, Ok(ResponseEvent::OutputItemAdded(item))).await {
+        return false;
+    }
+    state.reasoning_added = true;
+    true
+}
+
+/// 收口本 turn 的思考：若已 Added 且累积到文本、且未出现 redacted，发一次
+/// `OutputItemDone(Reasoning)`（content=思考文本，continuity_token=signature）。idempotent
+/// （`reasoning_finalized` 守卫重复调用）。须在 Done(Message)/Done(FunctionCall) 之前调用，
+/// 以对齐 Anthropic wire `[thinking, text, tool_use]` 序。
+///
+/// 跳过条件：未 Added（无思考）、已收口、`had_redacted`（整组不回喂，避免部分回放 400）、
+/// 文本为空（无签名无意义）。
+async fn finalize_thinking(
+    state: &mut AnthropicStreamState,
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) -> bool {
+    if state.reasoning_finalized || !state.reasoning_added || state.had_redacted {
+        state.reasoning_finalized = true;
+        return true;
+    }
+    state.reasoning_finalized = true;
+    let text = std::mem::take(&mut state.thinking_text);
+    if text.is_empty() {
+        return true;
+    }
+    let signature = state.thinking_signature.take();
+    let reasoning = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: Some(vec![ReasoningItemContent::ReasoningText { text }]),
+        encrypted_content: None,
+        continuity_token: signature,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    if send(tx_event, Ok(ResponseEvent::OutputItemDone(reasoning))).await {
+        return false;
+    }
+    true
+}
+
 /// 在 `message_stop`/EOF 一次性装配并发出收尾事件：`OutputItemDone(Message)` →
 /// `OutputItemDone(FunctionCall)`× → `Completed`。
 async fn flush(
     state: &mut AnthropicStreamState,
     tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
+    // 0. 收口本 turn 的思考（若尚未在 text/tool_use 块开始时收口，如纯思考 turn）。
+    //    必须早于 assistant 文本/工具收尾，对齐 wire 序。idempotent。
+    if !finalize_thinking(state, tx_event).await {
+        return;
+    }
+
     // 1. assistant 文本消息收尾（仅当确实累积到文本）。
     if state.message_item_added && !state.assistant_text.is_empty() {
         let message = ResponseItem::Message {

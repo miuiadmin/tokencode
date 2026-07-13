@@ -35,6 +35,7 @@ use codex_language_model::UnifiedTextControls;
 use codex_language_model::UnifiedTextFormat;
 use codex_language_model::UnifiedTextFormatType;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use futures::StreamExt;
@@ -1046,8 +1047,9 @@ async fn reasoning_effort_drives_wire_thinking() {
     }
 }
 
-/// 扩展思考 SSE 回放：`thinking_delta` 归一为 `UnifiedEvent::ReasoningContentDelta`，
-/// `signature_delta` 静默忽略（v1 不回喂思考）；text 块仍正常流式与装配。
+/// 扩展思考 SSE 回放：`thinking_delta` 归一为 `UnifiedEvent::ReasoningContentDelta`（live 显示），
+/// `signature_delta` 捕获为思考签名；text 块开始时收口出 `Reasoning` item（content=思考文本，
+/// continuity_token=signature），且其 `OutputItemDone` 早于 assistant 文本（对齐 wire 序）。
 #[tokio::test]
 async fn fixture_thinking_delta_emits_reasoning_event() {
     let events = vec![
@@ -1090,6 +1092,223 @@ async fn fixture_thinking_delta_emits_reasoning_event() {
     assert_eq!(text, vec!["答案是", "42"], "文本增量序列: {evs:?}");
     // 装配出 assistant 文本（thinking 不进 message content）。
     expect_assistant_text(&evs, "答案是42");
+
+    // signature 不再丢弃：收口出 Reasoning item，continuity_token=signature、content=思考文本。
+    let reasoning_idx = evs.iter().position(|ev| {
+        matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Reasoning { .. }))
+    });
+    let reasoning_idx = reasoning_idx.expect("应收口出 Reasoning item");
+    let (content, token) = match &evs[reasoning_idx] {
+        UnifiedEvent::OutputItemDone(ResponseItem::Reasoning {
+            content, continuity_token, ..
+        }) => (content.clone(), continuity_token.clone()),
+        _ => unreachable!(),
+    };
+    assert_eq!(token.as_deref(), Some("sig-abc"), "continuity_token 应为 signature");
+    let reasoning_text = content
+        .expect("Reasoning content 应非空")
+        .into_iter()
+        .map(|c| match c {
+            ReasoningItemContent::ReasoningText { text }
+            | ReasoningItemContent::Text { text } => text,
+        })
+        .collect::<String>();
+    assert_eq!(reasoning_text, "先分析问题", "思考文本应为累积全文");
+
+    // 顺序约束：Reasoning 的 Done 必须早于 assistant 文本 Done（wire `[thinking, text]`）。
+    let message_idx = evs
+        .iter()
+        .position(|ev| {
+            matches!(
+                ev,
+                UnifiedEvent::OutputItemDone(ResponseItem::Message { role, .. }) if role == "assistant"
+            )
+        })
+        .expect("应有 assistant Message Done");
+    assert!(
+        reasoning_idx < message_idx,
+        "Reasoning Done 必须早于 Message Done：{evs:?}"
+    );
+}
+
+/// redacted_thinking 整组守卫：本 turn 出现 redacted_thinking 时，即便有 regular thinking
+/// 文本与签名，也不收口出 Reasoning item（避免部分回放被服务端拒 400）。live 思考增量与
+/// 文本仍正常（守卫只抑制持久化，不抑制流式显示）。
+#[tokio::test]
+async fn fixture_redacted_thinking_suppresses_reasoning_item() {
+    let events = vec![
+        json!({"type": "message_start", "message": {"id": "msg_r", "model": "claude", "usage": {"input_tokens": 3, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "明文思考"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig-plain"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "redacted_thinking", "data": "encrypted-blob"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "回答"}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 4}}),
+        json!({"type": "message_stop"}),
+    ];
+    let (evs, err) = run(build_anthropic_body(&events)).await;
+    assert!(err.is_none(), "redacted 流不应报错：{err:?}");
+    // 关键：不收口出 Reasoning item（整组不回喂）。
+    let has_reasoning_done = evs
+        .iter()
+        .any(|ev| matches!(ev, UnifiedEvent::OutputItemDone(ResponseItem::Reasoning { .. })));
+    assert!(!has_reasoning_done, "redacted turn 不应收口出 Reasoning：{evs:?}");
+    // live 思考增量仍流式（守卫只抑制持久化，不抑制显示）。
+    assert!(
+        evs.iter().any(|ev| matches!(
+            ev,
+            UnifiedEvent::ReasoningContentDelta { delta, .. } if delta == "明文思考"
+        )),
+        "明文思考增量仍应流式：{evs:?}"
+    );
+    expect_assistant_text(&evs, "回答");
+}
+
+/// 回放：历史 Reasoning（continuity_token=signature）+ 同 turn assistant Message → 请求 wire
+/// 末条 assistant 消息 content 为 `[{thinking, signature}, {text}]`（序对齐 Anthropic 协议）。
+/// 无签名的 Reasoning 不回喂（不产 thinking 块）。
+#[tokio::test]
+async fn replay_reasoning_with_signature_emits_thinking_block() {
+    let body = build_anthropic_body(&[
+        json!({"type": "message_start", "message": {"id": "msg_x", "model": "claude", "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+        json!({"type": "message_stop"}),
+    ]);
+    let captured = Arc::new(Mutex::new(None::<Value>));
+    let adapter = AnthropicAdapter::new(
+        CapturingTransport::new(body.clone(), captured.clone()),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let mut req = sample_unified_request();
+    // 历史：user → assistant(Reasoning 思考 + 文本)。Reasoning 与 assistant Message 同 turn。
+    req.input = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "继续".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::Reasoning {
+            id: None,
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: "上一轮思考".to_string(),
+            }]),
+            encrypted_content: None,
+            continuity_token: Some("sig-prev".to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "上一轮回答".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+    let _ = LanguageModel::stream(&adapter, req, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+    let wire = captured
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    let messages = wire
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("应有 messages");
+    let last_assistant = messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))
+        .expect("应有 assistant 消息");
+    let blocks = last_assistant
+        .get("content")
+        .and_then(|c| c.as_array())
+        .expect("assistant 应有 content 数组");
+    assert_eq!(
+        blocks[0].get("type").and_then(|v| v.as_str()),
+        Some("thinking"),
+        "首块应为 thinking：{blocks:?}"
+    );
+    assert_eq!(
+        blocks[0].get("thinking").and_then(|v| v.as_str()),
+        Some("上一轮思考")
+    );
+    assert_eq!(
+        blocks[0].get("signature").and_then(|v| v.as_str()),
+        Some("sig-prev")
+    );
+    assert_eq!(
+        blocks[1].get("type").and_then(|v| v.as_str()),
+        Some("text"),
+        "次块应为 text：{blocks:?}"
+    );
+    assert_eq!(
+        blocks[1].get("text").and_then(|v| v.as_str()),
+        Some("上一轮回答")
+    );
+
+    // 反例：无 continuity_token 的 Reasoning 不回喂（不产 thinking 块）。
+    let captured2 = Arc::new(Mutex::new(None::<Value>));
+    let adapter2 = AnthropicAdapter::new(
+        CapturingTransport::new(body, captured2.clone()),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let mut req2 = sample_unified_request();
+    req2.input = vec![
+        ResponseItem::Reasoning {
+            id: None,
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: "无签名思考".to_string(),
+            }]),
+            encrypted_content: None,
+            continuity_token: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "回答".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+    let _ = LanguageModel::stream(&adapter2, req2, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+    let wire2 = captured2
+        .lock()
+        .expect("capture mutex poisoned")
+        .clone()
+        .expect("应已捕获请求体");
+    let has_thinking = wire2
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|m| {
+            m.get("content")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("thinking"));
+    assert!(!has_thinking, "无签名的 Reasoning 不应回喂 thinking 块：{wire2:?}");
 }
 
 /// provider.max_output_tokens 调小 → thinking budget 夹断到 `max_tokens - 1024`（留文本预算）；

@@ -33,6 +33,7 @@ use codex_language_model::UnifiedEventStream;
 use codex_language_model::UnifiedRequest;
 use codex_language_model::UnifiedRequestOptions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::ToolName;
@@ -207,14 +208,48 @@ fn translate_item(item: ResponseItem, messages: &mut Vec<AnthropicMessage>) {
         ResponseItem::CustomToolCallOutput { call_id, output, .. } => {
             push_tool_result(messages, call_id, output.body.to_text(), output.success);
         }
+        ResponseItem::Reasoning {
+            content,
+            continuity_token,
+            ..
+        } => {
+            // 带签名的思考回喂为 Thinking 块：continuity_token 承载 Anthropic signature，
+            // 续思考时服务端据此校验同一 thinking 块。无签名则跳过——OpenAI 走自家
+            // encrypted_content 字段、纯文本思考无连续凭证，Anthropic 无可回喂项。
+            // 文本从 content 取（ReasoningText / Text 的 text 拼接）。借助 append_blocks
+            // 同角色合并，Thinking 块与随后同 turn 的 text/tool_use 自动并入同一条
+            // assistant 消息，得 `[thinking, text, tool_use]` 序（Anthropic 协议要求）。
+            let Some(signature) = continuity_token else {
+                return;
+            };
+            let thinking_text = content
+                .map(|cs| {
+                    cs.into_iter()
+                        .filter_map(|c| match c {
+                            ReasoningItemContent::ReasoningText { text }
+                            | ReasoningItemContent::Text { text } => Some(text),
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            if thinking_text.is_empty() {
+                return;
+            }
+            append_blocks(
+                messages,
+                "assistant",
+                vec![AnthropicContentBlock::Thinking {
+                    thinking: thinking_text,
+                    signature: Some(signature),
+                }],
+            );
+        }
         // 以下变体 Anthropic 无等价或不可解码：一律跳过。
-        // - Reasoning：encrypted_content 不可回喂，Anthropic v1 不发 thinking 字段。
         // - AgentMessage / LocalShellCall / ToolSearchCall / ToolSearchOutput / WebSearchCall /
         //   ImageGenerationCall / Compaction / ContextCompaction / CompactionTrigger /
         //   AdditionalTools：Responses 专属 / 多 agent / 压缩 / 控制项。
         // - Other：未知透传项。
-        ResponseItem::Reasoning { .. }
-        | ResponseItem::AgentMessage { .. }
+        ResponseItem::AgentMessage { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::ToolSearchOutput { .. }
