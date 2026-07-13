@@ -1,6 +1,7 @@
 use super::*;
 use base64::Engine;
 use pretty_assertions::assert_eq;
+use std::time::Duration;
 
 #[test]
 fn map_api_error_maps_server_overloaded() {
@@ -24,6 +25,76 @@ fn map_api_error_maps_server_overloaded_from_503_body() {
     }));
 
     assert!(matches!(err, CodexErr::ServerOverloaded));
+}
+
+#[test]
+fn map_api_error_503_server_overloaded_with_retry_after_becomes_retryable_stream() {
+    // 503 server_is_overloaded + Retry-After 头 → 可重试 Stream（过载多为短暂，按服务端指示退避）；
+    // 无头则保持终态 ServerOverloaded（已由 map_api_error_maps_server_overloaded_from_503_body 覆盖）。
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "retry-after-ms",
+        http::HeaderValue::from_static("10000"),
+    );
+    let body = serde_json::json!({ "error": { "code": "server_is_overloaded" } }).to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::SERVICE_UNAVAILABLE,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(body),
+    }));
+    match err {
+        CodexErr::Stream(_, Some(delay)) => assert_eq!(delay, Duration::from_millis(10000)),
+        other => panic!("expected CodexErr::Stream(_, Some), got {other:?}"),
+    }
+}
+
+#[test]
+fn map_api_error_429_with_retry_after_becomes_retryable_stream() {
+    // 非账户类 429（临时限流）+ Retry-After 头 → 可重试 Stream（带 delay），应用层按服务端
+    // 指示退避，而非直接终态 RetryLimit。
+    let mut headers = HeaderMap::new();
+    headers.insert("retry-after", http::HeaderValue::from_static("5"));
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(
+            r#"{"error":{"code":"rate_limit_exceeded","message":"try again later"}}"#.to_string(),
+        ),
+    }));
+    match err {
+        CodexErr::Stream(_, Some(delay)) => assert_eq!(delay, Duration::from_secs(5)),
+        other => panic!("expected CodexErr::Stream(_, Some), got {other:?}"),
+    }
+}
+
+#[test]
+fn map_api_error_429_without_retry_after_stays_terminal_retry_limit() {
+    // 非账户类 429 无 Retry-After 头 → 终态 RetryLimit（无服务端指示，不无限重试）。
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(r#"{"error":{"code":"rate_limit_exceeded"}}"#.to_string()),
+    }));
+    assert!(matches!(err, CodexErr::RetryLimit(_)));
+}
+
+#[test]
+fn map_api_error_429_usage_limit_ignores_retry_after() {
+    // 账户类 429（usage_limit_reached）即使带 Retry-After 头也保持终态 UsageLimitReached——
+    // 额度耗尽不是临时限流，退避无意义。
+    let mut headers = HeaderMap::new();
+    headers.insert("retry-after", http::HeaderValue::from_static("5"));
+    let body = serde_json::json!({ "error": { "type": "usage_limit_reached" } }).to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(body),
+    }));
+    assert!(matches!(err, CodexErr::UsageLimitReached(_)));
 }
 
 #[test]

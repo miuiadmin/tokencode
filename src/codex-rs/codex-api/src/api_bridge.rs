@@ -6,6 +6,7 @@ use crate::rate_limits::parse_rate_limit_reached_type;
 use base64::Engine;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_client::parse_retry_after_header;
 use codex_protocol::auth::PlanType;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::RetryLimitReachedError;
@@ -57,6 +58,12 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         Some("server_is_overloaded" | "slow_down")
                     )
                 {
+                    // 过载多为短暂：服务端经 Retry-After 头明示退避时长时改为可重试
+                    // （CodexErr::Stream 带 delay，应用层按指示退避）；无头则保持终态
+                    // ServerOverloaded（提示用户换模型）。
+                    if let Some(delay) = headers.as_ref().and_then(parse_retry_after_header) {
+                        return CodexErr::Stream(body_text, Some(delay));
+                    }
                     return CodexErr::ServerOverloaded;
                 }
 
@@ -108,10 +115,18 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         }
                     }
 
-                    CodexErr::RetryLimit(RetryLimitReachedError {
-                        status,
-                        request_id: extract_request_tracking_id(headers.as_ref()),
-                    })
+                    // 非账户类 429（临时限流，如 rate_limit_exceeded）：服务端经 Retry-After 头
+                    // 明示退避时长时改为可重试（CodexErr::Stream 带 delay，应用层按指示退避）；
+                    // 无头保持终态 RetryLimit（避免无指示下无限重试）。账户类（usage_limit_reached
+                    // / usage_not_included）已在上面先行 return，不受此处分流影响。
+                    if let Some(delay) = headers.as_ref().and_then(parse_retry_after_header) {
+                        CodexErr::Stream(body_text, Some(delay))
+                    } else {
+                        CodexErr::RetryLimit(RetryLimitReachedError {
+                            status,
+                            request_id: extract_request_tracking_id(headers.as_ref()),
+                        })
+                    }
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
