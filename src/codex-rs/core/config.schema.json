@@ -4607,6 +4607,13 @@
             "anthropic"
           ],
           "type": "string"
+        },
+        {
+          "description": "Google Gemini generateContent API at `/v1beta/models/{model}:streamGenerateContent` （原生多协议支持）。路由到 `Gemini` adapter（认证由 adapter 内层把 Bearer 改写为 `x-goog-api-key`）。仅 AI Studio；Vertex 的 SA OAuth 后续单独支持。",
+          "enum": [
+            "gemini"
+          ],
+          "type": "string"
         }
       ]
     },

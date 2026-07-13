@@ -58,6 +58,13 @@ pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 // （见 codex-api anthropic.rs）；若误带 `/v1` 会拼成 `/v1/v1/messages` 导致 404。
 pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
+const GEMINI_PROVIDER_NAME: &str = "Google Gemini";
+pub const GEMINI_PROVIDER_ID: &str = "gemini";
+// Gemini adapter 约定 base_url 为根（不含 `/v1beta`），endpoint 自带
+// `v1beta/models/{model}:streamGenerateContent`（见 codex-api gemini.rs）；
+// 若误带 `/v1beta` 会拼成双段导致 404。
+pub const GEMINI_DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+
 const GLM_PROVIDER_NAME: &str = "Z.ai GLM";
 pub const GLM_PROVIDER_ID: &str = "glm";
 pub const GLM_DEFAULT_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
@@ -85,6 +92,10 @@ pub enum WireApi {
     /// 路由到 `Anthropic` adapter（认证由 adapter 内层把 Bearer 改写为 `x-api-key` +
     /// `anthropic-version`）。
     Anthropic,
+    /// Google Gemini generateContent API at `/v1beta/models/{model}:streamGenerateContent`
+    /// （原生多协议支持）。路由到 `Gemini` adapter（认证由 adapter 内层把 Bearer
+    /// 改写为 `x-goog-api-key`）。仅 AI Studio；Vertex 的 SA OAuth 后续单独支持。
+    Gemini,
 }
 
 impl fmt::Display for WireApi {
@@ -93,6 +104,7 @@ impl fmt::Display for WireApi {
             Self::Responses => "responses",
             Self::Chat => "chat",
             Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
         };
         f.write_str(value)
     }
@@ -108,9 +120,10 @@ impl<'de> Deserialize<'de> for WireApi {
             "responses" => Ok(Self::Responses),
             "chat" => Ok(Self::Chat),
             "anthropic" => Ok(Self::Anthropic),
+            "gemini" => Ok(Self::Gemini),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat", "anthropic"],
+                &["responses", "chat", "anthropic", "gemini"],
             )),
         }
     }
@@ -474,6 +487,7 @@ impl ModelProviderInfo {
             WireApi::Responses => AdapterType::OpenaiResponses,
             WireApi::Chat => AdapterType::OpenaiChat,
             WireApi::Anthropic => AdapterType::Anthropic,
+            WireApi::Gemini => AdapterType::Gemini,
         })
     }
 }
@@ -509,6 +523,7 @@ pub fn built_in_model_providers(
         ),
         // —— 跨厂商直连：每条模型在 models.json 里通过 provider_id 绑定到下列 provider ——
         (ANTHROPIC_PROVIDER_ID, create_anthropic_provider(None)),
+        (GEMINI_PROVIDER_ID, create_gemini_provider(None)),
         (
             GLM_PROVIDER_ID,
             // env_key 用智谱官方约定的 ZHIPUAI_API_KEY（其 SDK/文档均用此名），而非内部
@@ -622,6 +637,22 @@ pub fn create_anthropic_provider(base_url: Option<String>) -> ModelProviderInfo 
         base_url: Some(base_url.unwrap_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_string())),
         env_key: Some("ANTHROPIC_API_KEY".to_string()),
         wire_api: WireApi::Anthropic,
+        ..Default::default()
+    }
+}
+
+/// 构造 Google Gemini 原生 provider（generateContent API，AI Studio）。
+///
+/// `max_output_tokens` 留 None：Gemini `generationConfig.maxOutputTokens` 缺省不发（由服务端
+/// 决定上限）；用户可经 [model_providers] 的 `max_output_tokens` 显式设置。认证由 `Gemini` adapter
+/// 内层把 Bearer 改写为 `x-goog-api-key`。仅 AI Studio（`generativelanguage.googleapis.com`）；
+/// Vertex 的 SA OAuth 后续单独支持。
+pub fn create_gemini_provider(base_url: Option<String>) -> ModelProviderInfo {
+    ModelProviderInfo {
+        name: GEMINI_PROVIDER_NAME.into(),
+        base_url: Some(base_url.unwrap_or_else(|| GEMINI_DEFAULT_BASE_URL.to_string())),
+        env_key: Some("GEMINI_API_KEY".to_string()),
+        wire_api: WireApi::Gemini,
         ..Default::default()
     }
 }

@@ -149,6 +149,24 @@ wire_api = "anthropic"
 }
 
 #[test]
+fn test_deserialize_gemini_wire_api_routes_to_gemini() {
+    // wire_api = "gemini" 解析为 WireApi::Gemini；未显式写 adapter_type 时，
+    // adapter_type() 由 wire_api 推导为 Gemini。
+    let provider_toml = r#"
+name = "Google Gemini"
+base_url = "https://generativelanguage.googleapis.com"
+env_key = "GEMINI_API_KEY"
+wire_api = "gemini"
+    "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+
+    assert_eq!(provider.wire_api, WireApi::Gemini);
+    assert_eq!(provider.adapter_type, None);
+    assert_eq!(provider.adapter_type(), AdapterType::Gemini);
+}
+
+#[test]
 fn test_deserialize_websocket_connect_timeout() {
     let provider_toml = r#"
 name = "OpenAI"
@@ -371,17 +389,19 @@ fn test_built_in_model_providers_include_amazon_bedrock() {
 fn test_built_in_model_providers_include_cross_vendor_providers() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 
-    // 跨厂商直连的 4 个 provider 应在内置目录里。
+    // 跨厂商直连的 5 个 provider 应在内置目录里。
     assert!(providers.contains_key(ANTHROPIC_PROVIDER_ID));
+    assert!(providers.contains_key(GEMINI_PROVIDER_ID));
     assert!(providers.contains_key(GLM_PROVIDER_ID));
     assert!(providers.contains_key(MINIMAX_PROVIDER_ID));
     assert!(providers.contains_key(MOONSHOT_PROVIDER_ID));
 
-    // openai / amazon-bedrock / ollama / lmstudio + 4 跨厂商 = 8。
-    assert_eq!(providers.len(), 8);
+    // openai / amazon-bedrock / ollama / lmstudio + 5 跨厂商 = 9。
+    assert_eq!(providers.len(), 9);
 
     // 各 provider 的 wire 协议应能正确路由到对应 adapter。
     assert_eq!(providers[ANTHROPIC_PROVIDER_ID].wire_api, WireApi::Anthropic);
+    assert_eq!(providers[GEMINI_PROVIDER_ID].wire_api, WireApi::Gemini);
     assert_eq!(providers[GLM_PROVIDER_ID].wire_api, WireApi::Chat);
     assert_eq!(providers[MINIMAX_PROVIDER_ID].wire_api, WireApi::Chat);
     assert_eq!(providers[MOONSHOT_PROVIDER_ID].wire_api, WireApi::Chat);
@@ -396,6 +416,10 @@ fn test_built_in_model_providers_include_cross_vendor_providers() {
     assert_eq!(
         providers[ANTHROPIC_PROVIDER_ID].env_key.as_deref(),
         Some("ANTHROPIC_API_KEY")
+    );
+    assert_eq!(
+        providers[GEMINI_PROVIDER_ID].env_key.as_deref(),
+        Some("GEMINI_API_KEY")
     );
 
     // Anthropic 内置 provider 不硬编码 max_output_tokens，留 None 由 adapter 常量兜底。

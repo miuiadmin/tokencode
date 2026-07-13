@@ -302,6 +302,9 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
         WireApi::Anthropic => unreachable!(
             "Anthropic wire_api 仅本地配置，不应经 proto 远程同步"
         ),
+        WireApi::Gemini => unreachable!(
+            "Gemini wire_api 仅本地配置，不应经 proto 远程同步"
+        ),
     }
 }
 

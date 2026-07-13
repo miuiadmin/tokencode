@@ -32,6 +32,7 @@ use std::sync::atomic::Ordering;
 
 use codex_api::AgentIdentityTelemetry;
 use codex_api::AnthropicAdapter;
+use codex_api::GeminiAdapter;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::CompactClient as ApiCompactClient;
@@ -155,6 +156,7 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
 const RESPONSES_ENDPOINT: &str = "/responses";
 const CHAT_ENDPOINT: &str = "/chat/completions";
 const ANTHROPIC_ENDPOINT: &str = "/v1/messages";
+const GEMINI_ENDPOINT: &str = "/v1beta:streamGenerateContent";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
@@ -1537,6 +1539,43 @@ impl ModelClientSession {
         .await
     }
 
+    /// 经 Gemini generateContent adapter 流式跑一个 turn（HTTP，无 WebSocket 前奏）。
+    ///
+    /// 与 `stream_anthropic_api` 同构：复用 `stream_via_language_model`（请求构建 / 401 重试 /
+    /// provider 错误映射一致）；差异仅在 adapter（`GeminiAdapter`，其构造时由 `GeminiAuth` 把
+    /// 内层 Bearer 改写为 `x-goog-api-key`）与 endpoint 标签。Gemini generateContent 协议无
+    /// WebSocket 通道，无 WS 前奏，直接走 HTTP。真实请求 path（含 model 名与 `?alt=sse`）由
+    /// `GeminiClient::stream_request` 内部组装，此处 endpoint 仅作 telemetry 标签。
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_gemini_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        self.stream_via_language_model(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+            GEMINI_ENDPOINT,
+            |transport, provider, auth, request_telemetry, sse_telemetry| {
+                GeminiAdapter::new(transport, provider, auth)
+                    .with_telemetry(request_telemetry, sse_telemetry)
+            },
+        )
+        .await
+    }
+
     /// 经中立 `LanguageModel` adapter 流式跑一个 turn 的共享实现。
     ///
     /// 抽取 Responses / Chat 两条 HTTP 路径的公共逻辑：每轮（含 401 重试）刷新 client setup
@@ -1973,8 +2012,24 @@ impl ModelClientSession {
                 )
                 .await
             }
-            // 当前仅接 OpenAI Responses / Chat / Anthropic adapter；其余协议（Gemini /
-            // Ollama 等）adapter 在后续阶段实现，当前命中即明确报错，避免静默走错路径。
+            // Gemini generateContent adapter。HTTP-only——Gemini 协议无 WebSocket 通道，
+            // 不经 WS 前奏，直接走 stream_gemini_api（认证由 adapter 内层 GeminiAuth
+            // 把 Bearer 改写为 x-goog-api-key）。
+            AdapterType::Gemini => {
+                self.stream_gemini_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
+            // 当前仅接 OpenAI Responses / Chat / Anthropic / Gemini adapter；其余协议
+            //（Ollama 等）adapter 在后续阶段实现，当前命中即明确报错，避免静默走错路径。
             unsupported => Err(CodexErr::UnsupportedOperation(format!(
                 "adapter type {unsupported:?} is not implemented yet"
             ))),

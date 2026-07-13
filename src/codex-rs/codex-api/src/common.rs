@@ -565,3 +565,197 @@ pub struct AnthropicApiRequest {
     pub thinking: Option<AnthropicThinking>,
     pub stream: bool,
 }
+
+// ======================================================================
+// Gemini generateContent 协议 wire 结构（与 Responses / Chat / Anthropic 并列）
+//
+// 与前三者的核心形态差异：
+// ① contents[] 只认 user/model 角色（assistant→model），system 必须走顶层
+//   `systemInstruction`（进 contents 会被服务端 400）；
+// ② 消息内容是 parts[]，靠字段名区分类型（`text`/`inlineData`/`functionCall`/
+//   `functionResponse`），而非 OpenAI 的 `{type:"..."}` tag；
+// ③ 工具调用是 model 消息里的 `functionCall` part，结果回喂是 **user** 消息里的
+//   `functionResponse` part（注意：是 user 而非专用 role，与 OpenAI tool role 不同）；
+// ④ model 不在 body，而在 URL path（`v1beta/models/{model}:streamGenerateContent`）；
+//   流式由端点名决定（streamGenerateContent vs generateContent），故 body 无 model/stream 字段。
+// ======================================================================
+
+/// Gemini 内嵌数据（图片/文件 base64）——`parts[].inlineData`。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiInlineData {
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    /// base64 编码的字节流（与 Anthropic `image.source.data` 同源）。
+    pub data: String,
+}
+
+/// Gemini 函数调用载荷（`parts[].functionCall`）：`{name, args}`。
+///
+/// `args` 为已解析 JSON 对象（对齐 Responses `FunctionCall.arguments` 解析后形态）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiFunctionCall {
+    pub name: String,
+    pub args: Value,
+}
+
+/// Gemini 函数结果回喂载荷（`parts[].functionResponse`）：`{name, response}`。
+///
+/// `response` 为结果对象（对齐 Responses `FunctionCallOutput.output` 解析后形态）。
+/// 失败时 `response` 内塞 `{error: "..."}`（Gemini 无独立 is_error 字段，靠内容表达）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiFunctionResponse {
+    pub name: String,
+    pub response: Value,
+}
+
+/// Gemini 内容块（`contents[].parts[]` 元素）。
+///
+/// Gemini 的 part 靠字段名区分类型（非 `type` tag），故用 `#[serde(untagged)]`：
+/// 序列化时直接输出变体字段（无 tag 前缀），与 Gemini wire 完全一致。各变体字段必然
+/// 存在（非 Option），保证一个 part 恒为单态。
+///
+/// `Thought` 须在 `Text` 之前声明——虽然 Serialize 方向 untagged 不依赖顺序，但保持
+/// 「带标记者优先」的阅读顺序，便于理解思考流 part 的 `thought:true` 标记语义。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum GeminiPart {
+    /// 思考片段（`includeThoughts:true` 时模型返回；`thought:true` 标记 + 文本）。
+    Thought {
+        thought: bool,
+        text: String,
+    },
+    /// 纯文本块。
+    Text {
+        text: String,
+    },
+    /// 内嵌图片/文件（base64）。
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiInlineData,
+    },
+    /// 模型发起的工具调用（出现在 model 消息 parts）。
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiFunctionCall,
+    },
+    /// 工具结果回喂（出现在 user 消息 parts）。
+    FunctionResponse {
+        #[serde(rename = "functionResponse")]
+        function_response: GeminiFunctionResponse,
+    },
+}
+
+/// Gemini 单条内容（`contents[]` 元素）。`role` 限 `user` / `model`（assistant→model）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiContent {
+    pub role: String,
+    pub parts: Vec<GeminiPart>,
+}
+
+/// Gemini 系统指令（顶层 `systemInstruction`）。
+///
+/// Gemini 不允许 contents[] 出现 system 角色：系统提示必须独立放在顶层
+/// `systemInstruction`。沿用 `{role, parts}` 形态（role 省略，parts 为文本块）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiSystemInstruction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    pub parts: Vec<GeminiPart>,
+}
+
+/// Gemini 函数声明（`tools[].functionDeclarations[]` 元素）。
+///
+/// 形态 `{name, description?, parameters?}`：`parameters` 为 JSON Schema（须经
+/// `sanitize_gemini_schema` 清洗，否则 Gemini 严格校验会 400）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiToolDeclaration {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+}
+
+/// Gemini 工具集（`tools[]` 元素）。
+///
+/// 形态 `{functionDeclarations: [...]}`：函数声明包在 `functionDeclarations` 数组里
+/// （与 OpenAI `{type:"function", function:{...}}` 扁平、Anthropic `{name, input_schema}` 不同）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiTool {
+    #[serde(rename = "functionDeclarations")]
+    pub function_declarations: Vec<GeminiToolDeclaration>,
+}
+
+/// Gemini 函数调用配置（`toolConfig.functionCallingConfig`）。
+///
+/// `mode`：`AUTO`（模型决定）/ `ANY`（强制调用，可配 `allowed_function_names` 限定）/
+/// `NONE`（禁用）。`allowed_function_names` 仅 ANY 模式有意义，其余模式不发。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiFunctionCallingConfig {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowedFunctionNames")]
+    pub allowed_function_names: Option<Vec<String>>,
+}
+
+/// Gemini 工具选择配置（顶层 `toolConfig`）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiToolConfig {
+    #[serde(rename = "functionCallingConfig")]
+    pub function_calling_config: GeminiFunctionCallingConfig,
+}
+
+/// Gemini thinking 配置（`generationConfig.thinkingConfig`）。
+///
+/// 双模态共存（按 model 名分叉，由 adapter 推导发其中之一）：
+/// - gemini-2.5：`thinking_budget`（int，0=禁用，>0 为思考 token 预算）；
+/// - gemini-3.x：`thinking_level`（enum 字面量：minimal/low/medium/high）。
+/// `include_thoughts`：true 时返回思考流（parts 带 `thought:true`），adapter 据此
+/// 归一为 `ResponseEvent::ReasoningContentDelta`。三者皆 Option，按需发。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiThinkingConfig {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "thinkingBudget")]
+    pub thinking_budget: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "thinkingLevel")]
+    pub thinking_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "includeThoughts")]
+    pub include_thoughts: Option<bool>,
+}
+
+/// Gemini 生成配置（`generationConfig`）。
+///
+/// `max_output_tokens` 由 adapter 从 `Provider.max_output_tokens` 注入（None 时不发，
+/// 走服务端默认）。`thinking_config` 由 adapter 从 `UnifiedReasoning.effort` + model
+/// 名推导（双模态）。`Default` 便于 adapter 用 `get_or_insert_default()` 先占位后填字段。
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct GeminiGenerationConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "topP")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "topK")]
+    pub top_k: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "maxOutputTokens")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "thinkingConfig")]
+    pub thinking_config: Option<GeminiThinkingConfig>,
+}
+
+/// Gemini generateContent 顶层请求体（wire）。
+///
+/// 与 `ResponsesApiRequest` / `ChatApiRequest` / `AnthropicApiRequest` 语义对齐，但为
+/// 第四种 wire 风格：`contents[]` + 顶层 `systemInstruction` + `tools` + `toolConfig` +
+/// `generationConfig`。**无 model 字段**（model 在 URL path）；**无 stream 字段**
+/// （流式由端点 `streamGenerateContent` 决定）。`contents` 必须非空（Gemini 要求至少
+/// 一条 user 内容），由 `GeminiClient::stream_request` 守卫。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GeminiApiRequest {
+    pub contents: Vec<GeminiContent>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "systemInstruction")]
+    pub system_instruction: Option<GeminiSystemInstruction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<GeminiTool>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "toolConfig")]
+    pub tool_config: Option<GeminiToolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "generationConfig")]
+    pub generation_config: Option<GeminiGenerationConfig>,
+}

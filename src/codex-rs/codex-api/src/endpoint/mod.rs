@@ -1,5 +1,7 @@
 pub(crate) mod anthropic;
 pub(crate) mod anthropic_adapter;
+pub(crate) mod gemini;
+pub(crate) mod gemini_adapter;
 pub(crate) mod chat;
 pub(crate) mod chat_adapter;
 pub(crate) mod compact;
@@ -18,6 +20,8 @@ pub use chat::ChatClient;
 pub use chat_adapter::OpenaiChatAdapter;
 pub use anthropic::AnthropicClient;
 pub use anthropic_adapter::AnthropicAdapter;
+pub use gemini::GeminiClient;
+pub use gemini_adapter::GeminiAdapter;
 pub use compact::CompactClient;
 pub use images::ImagesClient;
 pub use memories::MemoriesClient;
