@@ -164,8 +164,6 @@ pub enum Feature {
     ToolSearchAlwaysDeferMcpTools,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
-    /// Enable discoverable tool suggestions for apps.
-    ToolSuggest,
     /// Enable plugins.
     Plugins,
     /// Removed compatibility flag for plugin-bundled lifecycle hooks.
@@ -1093,12 +1091,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "unavailable_dummy_tools",
         stage: Stage::Removed,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::ToolSuggest,
-        key: "tool_suggest",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Plugins,

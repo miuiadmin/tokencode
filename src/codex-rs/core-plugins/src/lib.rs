@@ -1,5 +1,4 @@
 mod app_mcp_routing;
-mod discoverable;
 pub mod installed_marketplaces;
 pub mod loader;
 mod manager;
@@ -20,7 +19,6 @@ pub mod store;
 #[cfg(test)]
 mod test_support;
 pub mod toggles;
-mod tool_suggest_metadata;
 
 pub const OPENAI_CURATED_MARKETPLACE_NAME: &str = "openai-curated";
 pub const OPENAI_API_CURATED_MARKETPLACE_NAME: &str = "openai-api-curated";
@@ -37,8 +35,6 @@ pub type LoadedPlugin = codex_plugin::LoadedPlugin<codex_config::McpServerConfig
 pub type PluginLoadOutcome = codex_plugin::PluginLoadOutcome<codex_config::McpServerConfig>;
 
 pub use app_mcp_routing::apps_route_available;
-pub use discoverable::ToolSuggestDiscoverablePlugin;
-pub use discoverable::ToolSuggestPluginDiscoveryInput;
 pub use loader::PluginHookLoadOutcome;
 pub use manager::ConfiguredMarketplace;
 pub use manager::ConfiguredMarketplaceListOutcome;
@@ -54,7 +50,6 @@ pub use manager::PluginReadRequest;
 pub use manager::PluginUninstallError;
 pub use manager::PluginsConfigInput;
 pub use manager::PluginsManager;
-pub use manager::RecommendedPluginCandidatesInput;
 pub use marketplace_policy::allowed_configured_marketplace_names;
 pub use marketplace_upgrade::ConfiguredMarketplaceUpgradeError as PluginMarketplaceUpgradeError;
 pub use marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome as PluginMarketplaceUpgradeOutcome;

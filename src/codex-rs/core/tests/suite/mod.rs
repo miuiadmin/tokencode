@@ -98,7 +98,6 @@ mod request_compression;
 mod request_permissions;
 #[cfg(not(target_os = "windows"))]
 mod request_permissions_tool;
-mod request_plugin_install;
 mod request_user_input;
 mod responses_api_proxy_headers;
 mod responses_lite;

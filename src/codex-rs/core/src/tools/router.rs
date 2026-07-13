@@ -13,7 +13,6 @@ use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
-use codex_tools::DiscoverableTool;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolName;
@@ -40,21 +39,8 @@ pub struct ToolRouter {
 pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) deferred_mcp_tools: Option<Vec<ToolInfo>>,
-    pub(crate) tool_suggest_candidates: Option<ToolSuggestCandidates>,
     pub(crate) extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
     pub(crate) dynamic_tools: &'a [DynamicToolSpec],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ToolSuggestPresentation {
-    ListTool,
-    RecommendationContext,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ToolSuggestCandidates {
-    pub(crate) tools: Vec<DiscoverableTool>,
-    pub(crate) presentation: ToolSuggestPresentation,
 }
 
 impl ToolRouter {

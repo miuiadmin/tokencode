@@ -243,18 +243,6 @@ pub struct RemotePluginSkillDetail {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteDiscoverablePlugin {
-    pub config_id: String,
-    pub remote_plugin_id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub has_skills: bool,
-    pub app_ids: Vec<String>,
-    pub install_policy: PluginInstallPolicy,
-    pub availability: PluginAvailability,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecommendedPlugin {
     pub config_id: String,
     pub remote_plugin_id: String,
@@ -911,24 +899,6 @@ pub fn has_cached_global_remote_plugin_catalog(
     catalog_cache::load_cached_global_directory_plugins(codex_home, config, auth).is_some()
 }
 
-pub fn cached_global_remote_discoverable_plugins(
-    codex_home: &Path,
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-) -> Vec<RemoteDiscoverablePlugin> {
-    catalog_cache::load_cached_global_directory_plugins(codex_home, config, auth)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|plugin| match remote_discoverable_plugin_from_directory_item(&plugin) {
-            Ok(plugin) => Some(plugin),
-            Err(err) => {
-                tracing::warn!(error = %err, "ignoring cached remote plugin recommendation entry");
-                None
-            }
-        })
-        .collect()
-}
-
 pub async fn fetch_openai_curated_remote_collection_marketplace(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
@@ -1487,34 +1457,6 @@ fn build_remote_plugin_summary(
         availability: plugin.availability,
         interface: remote_plugin_interface_to_info(plugin),
         keywords: plugin.release.keywords.clone(),
-    })
-}
-
-fn remote_discoverable_plugin_from_directory_item(
-    plugin: &RemotePluginDirectoryItem,
-) -> Result<RemoteDiscoverablePlugin, RemotePluginCatalogError> {
-    let marketplace_name = remote_plugin_canonical_marketplace_name(plugin)?;
-    let plugin_id =
-        PluginId::new(plugin.name.clone(), marketplace_name.to_string()).map_err(|err| {
-            RemotePluginCatalogError::UnexpectedResponse(format!(
-                "invalid remote plugin config id for `{}` in `{marketplace_name}`: {err}",
-                plugin.name
-            ))
-        })?;
-    let display_name =
-        non_empty_string(Some(&plugin.release.display_name)).unwrap_or_else(|| plugin.name.clone());
-    let description = non_empty_string(plugin.release.interface.short_description.as_deref())
-        .or_else(|| non_empty_string(Some(&plugin.release.description)));
-
-    Ok(RemoteDiscoverablePlugin {
-        config_id: plugin_id.as_key(),
-        remote_plugin_id: plugin.id.clone(),
-        name: display_name,
-        description,
-        has_skills: !plugin.release.skills.is_empty(),
-        app_ids: plugin.release.app_ids.clone(),
-        install_policy: plugin.installation_policy,
-        availability: plugin.availability,
     })
 }
 

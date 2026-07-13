@@ -23,7 +23,6 @@ use crate::types::PluginConfig;
 use crate::types::SandboxWorkspaceWrite;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
-use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
@@ -431,9 +430,6 @@ pub struct ConfigToml {
 
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
-
-    /// Additional discoverable tools that can be suggested for installation.
-    pub tool_suggest: Option<ToolSuggestConfig>,
 
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,

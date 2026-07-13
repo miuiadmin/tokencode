@@ -12,7 +12,6 @@ pub mod accessible;
 mod app_info;
 mod app_tool_policy;
 mod directory_cache;
-pub mod filter;
 pub mod merge;
 pub mod metadata;
 mod plugin_config;

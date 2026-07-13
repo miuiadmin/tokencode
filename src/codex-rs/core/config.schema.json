@@ -723,9 +723,6 @@
             "tool_search_always_defer_mcp_tools": {
               "type": "boolean"
             },
-            "tool_suggest": {
-              "type": "boolean"
-            },
             "tui_app_server": {
               "type": "boolean"
             },
@@ -2997,65 +2994,6 @@
       },
       "type": "object"
     },
-    "ToolSuggestConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "disabled_tools": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/ToolSuggestDisabledTool"
-          },
-          "type": "array"
-        },
-        "discoverables": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/ToolSuggestDiscoverable"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "ToolSuggestDisabledTool": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "type": {
-          "$ref": "#/definitions/ToolSuggestDiscoverableType"
-        }
-      },
-      "required": [
-        "id",
-        "type"
-      ],
-      "type": "object"
-    },
-    "ToolSuggestDiscoverable": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "type": {
-          "$ref": "#/definitions/ToolSuggestDiscoverableType"
-        }
-      },
-      "required": [
-        "id",
-        "type"
-      ],
-      "type": "object"
-    },
-    "ToolSuggestDiscoverableType": {
-      "enum": [
-        "connector",
-        "plugin"
-      ],
-      "type": "string"
-    },
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
@@ -5121,9 +5059,6 @@
         "tool_search_always_defer_mcp_tools": {
           "type": "boolean"
         },
-        "tool_suggest": {
-          "type": "boolean"
-        },
         "tui_app_server": {
           "type": "boolean"
         },
@@ -5559,14 +5494,6 @@
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
-    },
-    "tool_suggest": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ToolSuggestConfig"
-        }
-      ],
-      "description": "Additional discoverable tools that can be suggested for installation."
     },
     "tools": {
       "allOf": [

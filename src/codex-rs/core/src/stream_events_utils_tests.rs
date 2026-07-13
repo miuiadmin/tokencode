@@ -285,7 +285,6 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
     let router = Arc::new(ToolRouter::from_context(
         step_context.as_ref(),
         crate::tools::router::ToolRouterParams {
-            tool_suggest_candidates: None,
             mcp_tools: None,
             deferred_mcp_tools: None,
             extension_tool_executors: Vec::new(),

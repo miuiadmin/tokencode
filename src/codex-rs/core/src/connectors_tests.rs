@@ -8,11 +8,9 @@ use codex_config::ConfigRequirements;
 use codex_config::ConfigRequirementsToml;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_config::types::ApprovalsReviewer;
-use codex_connectors::merge::plugin_connector_to_app_info;
 use codex_connectors::metadata::connector_install_url;
 use codex_connectors::metadata::sanitize_name;
 use codex_features::Feature;
-use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 use pretty_assertions::assert_eq;
@@ -20,7 +18,6 @@ use rmcp::model::JsonObject;
 use rmcp::model::Meta;
 use rmcp::model::Tool;
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -484,141 +481,5 @@ async fn with_app_enabled_state_preserves_unrelated_disabled_connector() {
     assert_eq!(
         with_app_enabled_state(vec![slack.clone(), app("connector_drive")], &config),
         vec![slack, drive]
-    );
-}
-
-#[tokio::test]
-async fn tool_suggest_connector_ids_include_configured_tool_suggest_discoverables() {
-    let codex_home = tempdir().expect("tempdir should succeed");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"
-[tool_suggest]
-discoverables = [
-  { type = "connector", id = "connector_2128aebfecb84f64a069897515042a44" },
-  { type = "plugin", id = "slack@openai-curated" },
-  { type = "connector", id = "   " }
-]
-"#,
-    )
-    .expect("write config");
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .build()
-        .await
-        .expect("config should load");
-
-    assert_eq!(
-        tool_suggest_connector_ids(&config, &[]),
-        HashSet::from(["connector_2128aebfecb84f64a069897515042a44".to_string()])
-    );
-}
-
-#[tokio::test]
-async fn tool_suggest_connector_ids_exclude_disabled_tool_suggestions() {
-    let codex_home = tempdir().expect("tempdir should succeed");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"
-[tool_suggest]
-discoverables = [
-  { type = "connector", id = "connector_calendar" },
-  { type = "connector", id = "connector_gmail" }
-]
-disabled_tools = [
-  { type = "connector", id = "connector_calendar" }
-]
-"#,
-    )
-    .expect("write config");
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .build()
-        .await
-        .expect("config should load");
-
-    assert_eq!(
-        tool_suggest_connector_ids(&config, &[]),
-        HashSet::from(["connector_gmail".to_string()])
-    );
-}
-
-#[tokio::test]
-async fn tool_suggest_uses_connector_id_fallback_when_directory_cache_is_empty() {
-    let codex_home = tempdir().expect("tempdir should succeed");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"
-[features]
-apps = true
-
-[tool_suggest]
-discoverables = [
-  { type = "connector", id = "connector_gmail" }
-]
-"#,
-    )
-    .expect("write config");
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .build()
-        .await
-        .expect("config should load");
-    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let plugins_manager = PluginsManager::new(config.codex_home.to_path_buf());
-
-    let discoverable_tools = list_tool_suggest_discoverable_tools_with_auth(
-        &config,
-        &plugins_manager,
-        Some(&auth),
-        &[],
-        &[],
-    )
-    .await
-    .expect("discoverable tools should load");
-
-    assert_eq!(
-        discoverable_tools,
-        vec![DiscoverableTool::from(plugin_connector_to_app_info(
-            "connector_gmail".to_string(),
-        ))]
-    );
-}
-
-#[tokio::test]
-async fn tool_suggest_includes_connectors_from_loaded_plugin_apps() {
-    let codex_home = tempdir().expect("tempdir should succeed");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"
-[features]
-apps = true
-"#,
-    )
-    .expect("write config");
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .build()
-        .await
-        .expect("config should load");
-    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let loaded_plugin_app_connector_ids = vec!["asdk_app_databricks_workspace".to_string()];
-    let plugins_manager = PluginsManager::new(config.codex_home.to_path_buf());
-
-    let discoverable_tools = list_tool_suggest_discoverable_tools_with_auth(
-        &config,
-        &plugins_manager,
-        Some(&auth),
-        &[],
-        &loaded_plugin_app_connector_ids,
-    )
-    .await
-    .expect("discoverable tools should load");
-
-    assert_eq!(
-        discoverable_tools,
-        vec![DiscoverableTool::from(plugin_connector_to_app_info(
-            "asdk_app_databricks_workspace".to_string(),
-        ))]
     );
 }

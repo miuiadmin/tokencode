@@ -52,8 +52,6 @@ enum AppLinkScreen {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppLinkSuggestionType {
-    Install,
-    Enable,
     Auth,
     ExternalAction,
 }
@@ -331,17 +329,12 @@ impl AppLinkView {
         self.selected_action = (self.selected_action + 1).min(self.action_labels().len() - 1);
     }
 
-    fn is_tool_suggestion(&self) -> bool {
-        self.elicitation_target.is_some()
-    }
-
     fn is_auth_suggestion(&self) -> bool {
-        self.is_tool_suggestion() && self.suggestion_type == Some(AppLinkSuggestionType::Auth)
+        self.suggestion_type == Some(AppLinkSuggestionType::Auth)
     }
 
     fn is_external_action_suggestion(&self) -> bool {
-        self.is_tool_suggestion()
-            && self.suggestion_type == Some(AppLinkSuggestionType::ExternalAction)
+        self.suggestion_type == Some(AppLinkSuggestionType::ExternalAction)
     }
 
     fn is_browser_action_suggestion(&self) -> bool {
@@ -360,11 +353,6 @@ impl AppLinkView {
             /*content*/ None,
             /*meta*/ None,
         );
-    }
-
-    fn decline_tool_suggestion(&mut self) {
-        self.resolve_elicitation(McpServerElicitationAction::Decline);
-        self.complete = true;
     }
 
     fn open_external_url(&mut self) {
@@ -387,9 +375,7 @@ impl AppLinkView {
                 force_refetch: true,
             });
         }
-        if self.is_tool_suggestion() {
-            self.resolve_elicitation(McpServerElicitationAction::Accept);
-        }
+        self.resolve_elicitation(McpServerElicitationAction::Accept);
         self.complete = true;
     }
 
@@ -404,55 +390,26 @@ impl AppLinkView {
             id: self.app_id.clone(),
             enabled: self.is_enabled,
         });
-        if self.is_tool_suggestion() {
-            self.resolve_elicitation(McpServerElicitationAction::Accept);
-            self.complete = true;
-        }
     }
 
     fn activate_selected_action(&mut self) {
-        if self.is_tool_suggestion() {
-            match self.suggestion_type {
-                Some(AppLinkSuggestionType::Enable) => match self.screen {
-                    AppLinkScreen::Link => match self.selected_action {
-                        0 => self.open_external_url(),
-                        1 if self.is_installed => self.toggle_enabled(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                    AppLinkScreen::InstallConfirmation => match self.selected_action {
-                        0 => self.complete_external_flow_and_close(),
-                        _ => self.decline_tool_suggestion(),
-                    },
+        // 浏览器动作类建议（auth / external action）需要解析 elicitation
+        if self.is_browser_action_suggestion() {
+            match self.screen {
+                AppLinkScreen::Link => match self.selected_action {
+                    0 => self.open_external_url(),
+                    _ => {
+                        // 用户取消，以 Decline 结束
+                        self.resolve_elicitation(McpServerElicitationAction::Decline);
+                        self.complete = true;
+                    }
                 },
-                Some(AppLinkSuggestionType::Auth) => match self.screen {
-                    AppLinkScreen::Link => match self.selected_action {
-                        0 => self.open_external_url(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                    AppLinkScreen::InstallConfirmation => match self.selected_action {
-                        0 => self.complete_external_flow_and_close(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                },
-                Some(AppLinkSuggestionType::ExternalAction) => match self.screen {
-                    AppLinkScreen::Link => match self.selected_action {
-                        0 => self.open_external_url(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                    AppLinkScreen::InstallConfirmation => match self.selected_action {
-                        0 => self.complete_external_flow_and_close(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                },
-                Some(AppLinkSuggestionType::Install) | None => match self.screen {
-                    AppLinkScreen::Link => match self.selected_action {
-                        0 => self.open_external_url(),
-                        _ => self.decline_tool_suggestion(),
-                    },
-                    AppLinkScreen::InstallConfirmation => match self.selected_action {
-                        0 => self.complete_external_flow_and_close(),
-                        _ => self.decline_tool_suggestion(),
-                    },
+                AppLinkScreen::InstallConfirmation => match self.selected_action {
+                    0 => self.complete_external_flow_and_close(),
+                    _ => {
+                        self.resolve_elicitation(McpServerElicitationAction::Decline);
+                        self.complete = true;
+                    }
                 },
             }
             return;
@@ -744,9 +701,7 @@ impl BottomPaneView for AppLinkView {
     }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
-        if self.is_tool_suggestion() {
-            self.resolve_elicitation(McpServerElicitationAction::Decline);
-        }
+        self.resolve_elicitation(McpServerElicitationAction::Decline);
         self.complete = true;
         CancellationEvent::Handled
     }
@@ -775,7 +730,7 @@ impl BottomPaneView for AppLinkView {
     }
 
     fn terminal_title_requires_action(&self) -> bool {
-        self.is_tool_suggestion()
+        self.elicitation_target.is_some()
     }
 }
 
@@ -850,7 +805,6 @@ impl crate::render::renderable::Renderable for AppLinkView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::app_server_requests::ResolvedAppServerRequest;
     use crate::app_event::AppEvent;
     use crate::render::renderable::Renderable;
     use insta::assert_snapshot;
@@ -1067,29 +1021,6 @@ mod tests {
         );
 
         assert!(!view.terminal_title_requires_action());
-    }
-
-    #[test]
-    fn tool_suggestion_requires_terminal_title_action() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Enable this app to use it for the current request.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: true,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Enable),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        assert!(view.terminal_title_requires_action());
     }
 
     #[test]
@@ -1343,272 +1274,6 @@ mod tests {
         assert!(
             rendered_blob.contains("tail42"),
             "expected wrapped setup URL tail to remain visible in narrow pane, got:\n{rendered_blob}"
-        );
-    }
-
-    #[test]
-    fn install_tool_suggestion_resolves_elicitation_after_confirmation() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Install this app in your browser, then return here.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: false,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Install),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        match rx.try_recv() {
-            Ok(AppEvent::OpenUrlInBrowser { url }) => {
-                assert_eq!(url, "https://example.test/google-calendar".to_string());
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        assert_eq!(view.screen, AppLinkScreen::InstallConfirmation);
-
-        view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        match rx.try_recv() {
-            Ok(AppEvent::RefreshConnectors { force_refetch }) => {
-                assert!(force_refetch);
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
-                assert_eq!(thread_id, suggestion_target().thread_id);
-                assert_eq!(
-                    op,
-                    Op::ResolveElicitation {
-                        server_name: "codex_apps".to_string(),
-                        request_id: AppServerRequestId::String("request-1".to_string()),
-                        decision: McpServerElicitationAction::Accept,
-                        content: None,
-                        meta: None,
-                    }
-                );
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        assert!(view.is_complete());
-    }
-
-    #[test]
-    fn declined_tool_suggestion_resolves_elicitation_decline() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: None,
-                instructions: "Install this app in your browser, then return here.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: false,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Install),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        view.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
-
-        match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
-                assert_eq!(thread_id, suggestion_target().thread_id);
-                assert_eq!(
-                    op,
-                    Op::ResolveElicitation {
-                        server_name: "codex_apps".to_string(),
-                        request_id: AppServerRequestId::String("request-1".to_string()),
-                        decision: McpServerElicitationAction::Decline,
-                        content: None,
-                        meta: None,
-                    }
-                );
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        assert!(view.is_complete());
-    }
-
-    #[test]
-    fn enable_tool_suggestion_resolves_elicitation_after_enable() {
-        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Enable this app to use it for the current request.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: true,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Enable),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        view.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
-
-        match rx.try_recv() {
-            Ok(AppEvent::SetAppEnabled { id, enabled }) => {
-                assert_eq!(id, "connector_google_calendar");
-                assert!(enabled);
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
-                assert_eq!(thread_id, suggestion_target().thread_id);
-                assert_eq!(
-                    op,
-                    Op::ResolveElicitation {
-                        server_name: "codex_apps".to_string(),
-                        request_id: AppServerRequestId::String("request-1".to_string()),
-                        decision: McpServerElicitationAction::Accept,
-                        content: None,
-                        meta: None,
-                    }
-                );
-            }
-            Ok(other) => panic!("unexpected app event: {other:?}"),
-            Err(err) => panic!("missing app event: {err}"),
-        }
-        assert!(view.is_complete());
-    }
-
-    #[test]
-    fn resolved_tool_suggestion_dismisses_matching_view() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Enable this app to use it for the current request.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: true,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Enable),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        assert!(
-            view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
-                server_name: "codex_apps".to_string(),
-                request_id: AppServerRequestId::String("request-1".to_string()),
-            })
-        );
-        assert!(view.is_complete());
-    }
-
-    #[test]
-    fn resolved_tool_suggestion_ignores_non_matching_request() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Enable this app to use it for the current request.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: true,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Enable),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        assert!(
-            !view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
-                server_name: "other_server".to_string(),
-                request_id: AppServerRequestId::String("request-1".to_string()),
-            })
-        );
-        assert!(!view.is_complete());
-    }
-
-    #[test]
-    fn install_suggestion_with_reason_snapshot() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Install this app in your browser, then return here.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: false,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Install),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        assert_snapshot!(
-            "app_link_view_install_suggestion_with_reason",
-            render_snapshot(
-                &view,
-                Rect::new(0, 0, 72, view.desired_height(/*width*/ 72))
-            )
-        );
-    }
-
-    #[test]
-    fn enable_suggestion_with_reason_snapshot() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let view = AppLinkView::new(
-            AppLinkViewParams {
-                app_id: "connector_google_calendar".to_string(),
-                title: "Google Calendar".to_string(),
-                description: Some("Plan events and schedules.".to_string()),
-                instructions: "Enable this app to use it for the current request.".to_string(),
-                url: "https://example.test/google-calendar".to_string(),
-                is_installed: true,
-                is_enabled: false,
-                suggest_reason: Some("Plan and reference events from your calendar".to_string()),
-                suggestion_type: Some(AppLinkSuggestionType::Enable),
-                elicitation_target: Some(suggestion_target()),
-            },
-            tx,
-        );
-
-        assert_snapshot!(
-            "app_link_view_enable_suggestion_with_reason",
-            render_snapshot(
-                &view,
-                Rect::new(0, 0, 72, view.desired_height(/*width*/ 72))
-            )
         );
     }
 

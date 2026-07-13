@@ -346,7 +346,6 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
             ("auth_elicitation".to_string(), true),
             ("memories".to_string(), true),
             ("remote_plugin".to_string(), true),
-            ("tool_suggest".to_string(), false),
         ]),
     )
     .await?;
@@ -358,7 +357,6 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
                 ("auth_elicitation".to_string(), true),
                 ("memories".to_string(), true),
                 ("remote_plugin".to_string(), true),
-                ("tool_suggest".to_string(), false),
             ]),
         }
     );
@@ -392,13 +390,6 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
             .get("features")
             .and_then(|features| features.get("remote_plugin")),
         Some(&json!(true))
-    );
-    assert_eq!(
-        config
-            .additional
-            .get("features")
-            .and_then(|features| features.get("tool_suggest")),
-        Some(&json!(false))
     );
 
     Ok(())

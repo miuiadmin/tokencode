@@ -180,12 +180,6 @@ fn from_sources_ignores_removed_terminal_resize_reflow_feature_key() {
 }
 
 #[test]
-fn tool_suggest_is_stable_and_enabled_by_default() {
-    assert_eq!(Feature::ToolSuggest.stage(), Stage::Stable);
-    assert_eq!(Feature::ToolSuggest.default_enabled(), true);
-}
-
-#[test]
 fn network_proxy_is_experimental_and_disabled_by_default() {
     assert_eq!(
         feature_for_key("network_proxy"),

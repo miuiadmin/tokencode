@@ -871,13 +871,6 @@ pub(crate) struct PluginSkillInventory {
 }
 
 impl PluginSkillInventory {
-    pub(crate) fn has_enabled_skills(&self, skill_config_rules: &SkillConfigRules) -> bool {
-        contains_enabled_skill(
-            &self.skills,
-            &resolve_disabled_skill_paths(&self.skills, skill_config_rules),
-        )
-    }
-
     fn resolve(self, skill_config_rules: &SkillConfigRules) -> ResolvedPluginSkills {
         let disabled_skill_paths = resolve_disabled_skill_paths(&self.skills, skill_config_rules);
         ResolvedPluginSkills {

@@ -41,7 +41,6 @@ use crate::marketplace_policy::configured_plugins_from_stack;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeError;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome;
 use crate::marketplace_upgrade::upgrade_configured_git_marketplaces;
-use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::remote::RecommendedPluginsMode;
 use crate::remote::RemoteInstalledPlugin;
 use crate::remote::RemotePluginCatalogError;
@@ -55,14 +54,11 @@ use crate::startup_sync::sync_openai_plugins_repo;
 use crate::store::PluginInstallResult as StorePluginInstallResult;
 use crate::store::PluginStore;
 use crate::store::PluginStoreError;
-use crate::tool_suggest_metadata::ToolSuggestMetadataCache;
 use codex_analytics::AnalyticsEventsClient;
 use codex_config::ConfigLayerStack;
 use codex_config::clear_user_plugin;
 use codex_config::set_user_plugin_enabled;
 use codex_config::types::PluginConfig;
-use codex_config::types::ToolSuggestDisabledTool;
-use codex_config::types::ToolSuggestDiscoverableType;
 use codex_core_skills::PluginSkillSnapshots;
 use codex_core_skills::SkillMetadata;
 use codex_core_skills::config_rules::SkillConfigRules;
@@ -80,9 +76,6 @@ use codex_plugin::prompt_safe_plugin_description;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::Product;
-use codex_tools::DiscoverablePluginInfo;
-use codex_tools::DiscoverableTool;
-use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::PluginSkillRoot;
 use std::collections::HashMap;
@@ -125,15 +118,6 @@ impl PluginsConfigInput {
             chatgpt_base_url,
         }
     }
-}
-
-/// Inputs used to select endpoint-backed plugin install candidates.
-pub struct RecommendedPluginCandidatesInput<'a> {
-    pub plugins_config: &'a PluginsConfigInput,
-    pub loaded_plugins: &'a PluginLoadOutcome,
-    pub auth: Option<&'a CodexAuth>,
-    pub disabled_tools: &'a [ToolSuggestDisabledTool],
-    pub app_server_client_name: Option<&'a str>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -363,7 +347,6 @@ pub struct PluginsManager {
     // Keep the cache auth-independent so auth changes only need to resolve capabilities again.
     loaded_plugins_cache: RwLock<LoadedPluginsCache>,
     loaded_plugins_load_semaphore: Semaphore,
-    tool_suggest_metadata_cache: ToolSuggestMetadataCache,
     remote_installed_plugins_cache: RwLock<Option<Vec<RemoteInstalledPlugin>>>,
     remote_installed_plugins_cache_refresh_state: RwLock<RemoteInstalledPluginsCacheRefreshState>,
     global_remote_catalog_cache_refresh_state: RwLock<GlobalRemoteCatalogCacheRefreshState>,
@@ -438,7 +421,6 @@ impl PluginsManager {
             non_curated_cache_refresh_state: RwLock::new(NonCuratedCacheRefreshState::default()),
             loaded_plugins_cache: RwLock::new(LoadedPluginsCache::default()),
             loaded_plugins_load_semaphore: Semaphore::new(/*permits*/ 1),
-            tool_suggest_metadata_cache: ToolSuggestMetadataCache::new(),
             remote_installed_plugins_cache: RwLock::new(None),
             remote_installed_plugins_cache_refresh_state: RwLock::new(
                 RemoteInstalledPluginsCacheRefreshState::default(),
@@ -614,7 +596,6 @@ impl PluginsManager {
     }
 
     fn clear_loaded_plugins_cache(&self) {
-        self.tool_suggest_metadata_cache.clear();
         let mut cache = match self.loaded_plugins_cache.write() {
             Ok(cache) => cache,
             Err(err) => err.into_inner(),
@@ -629,8 +610,6 @@ impl PluginsManager {
     ) {
         if installed_plugin_cache_refreshed {
             self.clear_cache();
-        } else {
-            self.tool_suggest_metadata_cache.clear();
         }
     }
 
@@ -838,31 +817,6 @@ impl PluginsManager {
                 plugins,
                 visible_marketplaces,
             ),
-        )
-    }
-
-    pub fn cached_global_remote_discoverable_plugins_for_config(
-        &self,
-        config: &PluginsConfigInput,
-        auth: Option<&CodexAuth>,
-    ) -> Vec<crate::remote::RemoteDiscoverablePlugin> {
-        if !config.plugins_enabled || !config.remote_plugin_enabled {
-            return Vec::new();
-        }
-        let Some(auth) = auth.filter(|auth| auth.uses_codex_backend()) else {
-            return Vec::new();
-        };
-        let Some(account_id) = auth.get_account_id() else {
-            return Vec::new();
-        };
-        if account_id.is_empty() {
-            return Vec::new();
-        }
-
-        crate::remote::cached_global_remote_discoverable_plugins(
-            self.codex_home.as_path(),
-            &remote_plugin_service_config(config),
-            auth,
         )
     }
 
@@ -1192,73 +1146,6 @@ impl PluginsManager {
     }
 
     /// Returns endpoint recommendations eligible for installation in the current client.
-    /// `None` selects the legacy discovery workflow.
-    #[instrument(level = "trace", skip_all)]
-    pub async fn recommended_plugin_candidates_for_config(
-        &self,
-        input: RecommendedPluginCandidatesInput<'_>,
-    ) -> Option<Vec<DiscoverableTool>> {
-        let RecommendedPluginsMode::Endpoint { plugins } = self
-            .recommended_plugins_mode_for_config(input.plugins_config, input.auth)
-            .await
-        else {
-            return None;
-        };
-        if plugins.is_empty() {
-            return Some(Vec::new());
-        }
-
-        let installed_plugin_ids = input
-            .loaded_plugins
-            .plugins()
-            .iter()
-            .map(|plugin| plugin.config_name.as_str())
-            .collect::<HashSet<_>>();
-        let installed_remote_plugin_ids = {
-            let cache = match self.remote_installed_plugins_cache.read() {
-                Ok(cache) => cache,
-                Err(err) => err.into_inner(),
-            };
-            cache
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|plugin| plugin.marketplace_name == REMOTE_GLOBAL_MARKETPLACE_NAME)
-                .map(|plugin| plugin.id.clone())
-                .collect::<HashSet<_>>()
-        };
-        let disabled_plugin_ids = input
-            .disabled_tools
-            .iter()
-            .filter(|tool| tool.kind == ToolSuggestDiscoverableType::Plugin)
-            .map(|tool| tool.id.as_str())
-            .collect::<HashSet<_>>();
-
-        let candidates = plugins
-            .into_iter()
-            .filter(|plugin| {
-                !installed_plugin_ids.contains(plugin.config_id.as_str())
-                    && !installed_remote_plugin_ids.contains(plugin.remote_plugin_id.as_str())
-                    && !disabled_plugin_ids.contains(plugin.config_id.as_str())
-            })
-            .map(|plugin| {
-                DiscoverableTool::from(DiscoverablePluginInfo {
-                    id: plugin.config_id,
-                    remote_plugin_id: Some(plugin.remote_plugin_id),
-                    name: plugin.display_name,
-                    description: None,
-                    has_skills: false,
-                    mcp_server_names: Vec::new(),
-                    app_connector_ids: plugin.app_connector_ids,
-                })
-            })
-            .collect();
-        Some(filter_request_plugin_install_discoverable_tools_for_client(
-            candidates,
-            input.app_server_client_name,
-        ))
-    }
-
     fn cached_recommended_plugins_mode(
         &self,
         cache_key: &RecommendedPluginsCacheKey,
@@ -1661,19 +1548,6 @@ impl PluginsManager {
             /*include_openai_curated*/ true,
         );
         self.list_marketplaces_with_policy(config, &marketplace_roots)
-    }
-
-    pub(crate) async fn tool_suggest_metadata_for_marketplace_plugin(
-        &self,
-        marketplace_name: &str,
-        plugin: &ConfiguredMarketplacePlugin,
-        skill_config_rules: &SkillConfigRules,
-    ) -> Result<PluginCapabilitySummary, MarketplaceError> {
-        let fragment = self
-            .tool_suggest_metadata_cache
-            .metadata_for_plugin(marketplace_name, plugin, self.restriction_product)
-            .await?;
-        Ok(fragment.project(skill_config_rules, self.auth_mode()))
     }
 
     pub async fn read_plugin_for_config(

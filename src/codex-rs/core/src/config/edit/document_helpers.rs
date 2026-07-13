@@ -4,13 +4,10 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
-use codex_config::types::ToolSuggestDisabledTool;
-use codex_config::types::ToolSuggestDiscoverableType;
 use toml_edit::Array as TomlArray;
 use toml_edit::InlineTable;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
-use toml_edit::Value as TomlValue;
 use toml_edit::value;
 
 pub(super) fn ensure_table_for_write(item: &mut TomlItem) -> Option<&mut TomlTable> {
@@ -216,57 +213,6 @@ pub(super) fn new_implicit_table() -> TomlTable {
     let mut table = TomlTable::new();
     table.set_implicit(true);
     table
-}
-
-pub(super) fn parse_tool_suggest_disabled_tool(
-    value: &TomlValue,
-) -> Option<ToolSuggestDisabledTool> {
-    let table = value.as_inline_table()?;
-    let kind = match table.get("type").and_then(TomlValue::as_str) {
-        Some("connector") => ToolSuggestDiscoverableType::Connector,
-        Some("plugin") => ToolSuggestDiscoverableType::Plugin,
-        _ => return None,
-    };
-    let id = table.get("id").and_then(TomlValue::as_str)?;
-    Some(ToolSuggestDisabledTool {
-        kind,
-        id: id.to_string(),
-    })
-}
-
-pub(super) fn parse_tool_suggest_disabled_tool_table(
-    table: &TomlTable,
-) -> Option<ToolSuggestDisabledTool> {
-    let kind = match table.get("type").and_then(TomlItem::as_str) {
-        Some("connector") => ToolSuggestDiscoverableType::Connector,
-        Some("plugin") => ToolSuggestDiscoverableType::Plugin,
-        _ => return None,
-    };
-    let id = table.get("id").and_then(TomlItem::as_str)?;
-    Some(ToolSuggestDisabledTool {
-        kind,
-        id: id.to_string(),
-    })
-}
-
-pub(super) fn tool_suggest_disabled_tools_value(
-    disabled_tools: &[ToolSuggestDisabledTool],
-) -> TomlItem {
-    let mut array = TomlArray::new();
-    for disabled_tool in disabled_tools {
-        let mut table = InlineTable::new();
-        table.insert(
-            "type",
-            match disabled_tool.kind {
-                ToolSuggestDiscoverableType::Connector => "connector",
-                ToolSuggestDiscoverableType::Plugin => "plugin",
-            }
-            .into(),
-        );
-        table.insert("id", disabled_tool.id.clone().into());
-        array.push(table);
-    }
-    TomlItem::Value(array.into())
 }
 
 fn array_from_iter<I>(iter: I) -> TomlItem
