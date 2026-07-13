@@ -28,6 +28,7 @@ use crate::common::GeminiToolDeclaration;
 use codex_language_model::UnifiedRequest;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::ToolName;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -215,16 +216,20 @@ fn translate_item(
             append_parts(contents, &role, parts);
         }
         ResponseItem::FunctionCall {
-            name, arguments, call_id, ..
+            name, namespace, arguments, call_id, ..
         } => {
-            tool_name_by_call_id.insert(call_id, name.clone());
-            push_function_call(contents, name, arguments);
+            // 历史 functionCall 的 name 必须与 functionDeclarations（展平后的 flat 名）一致，
+            // 否则 Gemini 服务端校验失败；flat 名同时入映射供 functionResponse 取用。
+            let flat = ToolName::new(namespace, name).to_flat_wire_name();
+            tool_name_by_call_id.insert(call_id, flat.clone());
+            push_function_call(contents, flat, arguments);
         }
         ResponseItem::CustomToolCall {
-            call_id, name, input, ..
+            call_id, name, namespace, input, ..
         } => {
-            tool_name_by_call_id.insert(call_id, name.clone());
-            push_function_call(contents, name, input);
+            let flat = ToolName::new(namespace, name).to_flat_wire_name();
+            tool_name_by_call_id.insert(call_id, flat.clone());
+            push_function_call(contents, flat, input);
         }
         ResponseItem::FunctionCallOutput { call_id, output, .. } => {
             let name = tool_name_by_call_id.get(&call_id).cloned();

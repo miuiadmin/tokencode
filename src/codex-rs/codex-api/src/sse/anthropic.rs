@@ -24,6 +24,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::ToolName;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -322,10 +323,13 @@ async fn process_event(
                     };
                     entry.id = id.clone();
                     entry.name = name.clone();
+                    // Anthropic wire 工具名为单字符串（协议无 namespace 字段）；非 Responses
+                    // 协议下 harness 已把 namespace 工具展平成 `{ns}__{name}` 下发，这里还原。
+                    let parsed = ToolName::from_flat_wire_name(&name);
                     let placeholder = ResponseItem::FunctionCall {
                         id: None,
-                        name,
-                        namespace: None,
+                        name: parsed.name,
+                        namespace: parsed.namespace,
                         arguments: String::new(),
                         call_id: id,
                         internal_chat_message_metadata_passthrough: None,
@@ -515,10 +519,11 @@ async fn flush(
             // 跳过既无 name 又无参数的空累积（防御）。
             continue;
         }
+        let parsed = ToolName::from_flat_wire_name(&tb.name);
         let call = ResponseItem::FunctionCall {
             id: None,
-            name: tb.name,
-            namespace: None,
+            name: parsed.name,
+            namespace: parsed.namespace,
             arguments: tb.input_json,
             call_id: tb.id,
             internal_chat_message_metadata_passthrough: None,

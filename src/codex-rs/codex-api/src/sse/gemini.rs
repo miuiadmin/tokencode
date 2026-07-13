@@ -24,6 +24,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::ToolName;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde_json::Value;
@@ -280,10 +281,14 @@ async fn process_part(
         let args_str = serde_json::to_string(&args_value).unwrap_or_else(|_| "{}".to_string());
         let index = state.tool_calls.len() as i64;
         let call_id = format!("call_{index}");
+        // Gemini wire 工具名为单字符串（functionCall.name，协议无 namespace 字段）；非 Responses
+        // 协议下 harness 已把 namespace 工具展平成 `{ns}__{name}` 下发，这里还原。注意 `name`
+        // 仍以 flat 形式存入累积器， flush 时再次还原，保证占位与收尾一致。
+        let parsed = ToolName::from_flat_wire_name(&name);
         let placeholder = ResponseItem::FunctionCall {
             id: None,
-            name: name.clone(),
-            namespace: None,
+            name: parsed.name,
+            namespace: parsed.namespace,
             arguments: String::new(),
             call_id: call_id.clone(),
             internal_chat_message_metadata_passthrough: None,
@@ -410,10 +415,11 @@ async fn flush(
         if tc.name.is_empty() && tc.args.is_empty() {
             continue;
         }
+        let parsed = ToolName::from_flat_wire_name(&tc.name);
         let call = ResponseItem::FunctionCall {
             id: None,
-            name: tc.name,
-            namespace: None,
+            name: parsed.name,
+            namespace: parsed.namespace,
             arguments: tc.args,
             call_id: tc.call_id,
             internal_chat_message_metadata_passthrough: None,

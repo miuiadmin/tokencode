@@ -29,6 +29,7 @@ use codex_language_model::UnifiedRequestOptions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::ToolName;
 use futures::future::BoxFuture;
 use serde_json::Map;
 use serde_json::Value;
@@ -174,11 +175,14 @@ fn translate_item(item: ResponseItem, messages: &mut Vec<ChatMessage>) {
                 tool_calls: None,
             });
         }
-        ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
-            push_tool_call(messages, call_id, name, arguments);
+        ResponseItem::FunctionCall { name, namespace, arguments, call_id, .. } => {
+            // 历史 tool_call.function.name 必须与 tools 声明（展平后的 flat 名）一致。
+            let flat = ToolName::new(namespace, name).to_flat_wire_name();
+            push_tool_call(messages, call_id, flat, arguments);
         }
-        ResponseItem::CustomToolCall { call_id, name, input, .. } => {
-            push_tool_call(messages, call_id, name, input);
+        ResponseItem::CustomToolCall { call_id, name, namespace, input, .. } => {
+            let flat = ToolName::new(namespace, name).to_flat_wire_name();
+            push_tool_call(messages, call_id, flat, input);
         }
         ResponseItem::FunctionCallOutput { call_id, output, .. } => {
             push_tool_output(messages, call_id, output.body.to_text());

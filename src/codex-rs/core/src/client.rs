@@ -91,6 +91,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
+use codex_tools::flatten_namespaces_for_flat_wire;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -859,7 +860,17 @@ impl ModelClient {
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
-        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        // 非 Responses 协议（Chat / Anthropic / Gemini）的 wire 只携带单个工具名字符串，
+        // 无法承载 namespace 结构——`{type:"namespace",...}` 会被这三家 adapter 丢弃，导致
+        // MCP / 多智能体等 namespace 工具对这些协议静默消失。这里在序列化前按 adapter 类型
+        // 把 namespace 展平成带分隔符的 flat function；模型回传的 flat 名再由各家 SSE parser
+        // 用 ToolName::from_flat_wire_name 还原 namespace，命中按 namespaced key 注册的派发表。
+        let visible_tools = if provider_info.adapter_type() != AdapterType::OpenaiResponses {
+            flatten_namespaces_for_flat_wire(&prompt.tools)
+        } else {
+            prompt.tools.clone()
+        };
+        let tools = create_tools_json_for_responses_api(&visible_tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,

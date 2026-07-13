@@ -9,6 +9,7 @@ use crate::JsonSchema;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
 use crate::create_tools_json_for_responses_api;
+use crate::flatten_namespaces_for_flat_wire;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -266,5 +267,68 @@ fn tool_search_tool_spec_serializes_expected_wire_shape() {
                 "additionalProperties": false,
             },
         })
+    );
+}
+
+#[test]
+fn flatten_namespaces_emits_flat_function_per_inner_tool() {
+    // namespace 内两个 function + 一个独立 function + 一个非 function 变体（ToolSearch）。
+    let specs = vec![
+        ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "context7".to_string(),
+            description: "Docs tools".to_string(),
+            tools: vec![
+                ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                    name: "get-docs".to_string(),
+                    description: "Get docs".to_string(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters: JsonSchema::object(
+                        BTreeMap::new(),
+                        /*required*/ None,
+                        /*additional_properties*/ None,
+                    ),
+                    output_schema: None,
+                }),
+                ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                    name: "search".to_string(),
+                    description: "Search docs".to_string(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters: JsonSchema::object(
+                        BTreeMap::new(),
+                        /*required*/ None,
+                        /*additional_properties*/ None,
+                    ),
+                    output_schema: None,
+                }),
+            ],
+        }),
+        ToolSpec::Function(ResponsesApiTool {
+            name: "apply_patch".to_string(),
+            description: "Apply a patch".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+            output_schema: None,
+        }),
+    ];
+
+    let flattened = flatten_namespaces_for_flat_wire(&specs);
+
+    // namespace 展平成两个 flat function，名字按 `{ns}__{name}` 拼接；独立 function 原样保留。
+    assert_eq!(flattened.len(), 3);
+    assert_eq!(flattened[0].name(), "context7__get-docs");
+    assert_eq!(flattened[1].name(), "context7__search");
+    assert_eq!(flattened[2].name(), "apply_patch");
+
+    // 展平出的 flat 名能被 ToolName 无损还原（派发契约）。
+    assert_eq!(
+        codex_protocol::ToolName::from_flat_wire_name(flattened[0].name()),
+        codex_protocol::ToolName::namespaced("context7", "get-docs")
     );
 }

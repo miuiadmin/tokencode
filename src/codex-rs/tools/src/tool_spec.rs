@@ -2,7 +2,9 @@ use crate::FreeformTool;
 use crate::JsonSchema;
 use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
+use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -88,6 +90,39 @@ pub fn create_tools_json_for_responses_api(
     }
 
     Ok(tools_json)
+}
+
+/// 把 `ToolSpec::Namespace` 展平成若干 `ToolSpec::Function`，工具名按
+/// `{namespace}__{name}` 拼接（见 [`ToolName::to_flat_wire_name`]），其余变体原样保留。
+///
+/// 用途：非 Responses 协议（OpenAI Chat / Anthropic / Gemini）的 wire 只携带单个工具名
+/// 字符串，没有 namespace 概念——`{type:"namespace",...}` 会被这三家 adapter 直接丢弃，
+/// 导致 MCP / 多智能体等 namespace 工具对这些协议静默消失。展平后 adapter 只见 function
+/// 工具，namespace 工具得以暴露给模型；模型回传的 flat 名再由各家 SSE parser 用
+/// [`ToolName::from_flat_wire_name`] 还原出 namespace，从而命中按 namespaced key 注册的
+/// 派发表（router 不变）。
+///
+/// Responses 协议无需展平：其 wire 原生支持 namespace 结构，模型回传时 namespace 是独立字段。
+pub fn flatten_namespaces_for_flat_wire(specs: &[ToolSpec]) -> Vec<ToolSpec> {
+    let mut flattened = Vec::with_capacity(specs.len());
+    for spec in specs {
+        match spec {
+            ToolSpec::Namespace(namespace) => {
+                for inner in &namespace.tools {
+                    match inner {
+                        ResponsesApiNamespaceTool::Function(tool) => {
+                            let mut flat = tool.clone();
+                            flat.name = ToolName::namespaced(&namespace.name, &tool.name)
+                                .to_flat_wire_name();
+                            flattened.push(ToolSpec::Function(flat));
+                        }
+                    }
+                }
+            }
+            other => flattened.push(other.clone()),
+        }
+    }
+    flattened
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

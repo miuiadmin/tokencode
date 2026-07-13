@@ -22,6 +22,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::ToolName;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -379,10 +380,13 @@ async fn process_chunk(
                     if let Some(name) = &name_opt {
                         entry.name = name.clone();
                     }
+                    // Chat wire 工具名为单字符串（协议无 namespace 字段）；非 Responses 协议下
+                    // harness 已把 namespace 工具展平成 `{ns}__{name}` 下发，这里还原。
+                    let parsed = ToolName::from_flat_wire_name(&entry.name);
                     let placeholder = ResponseItem::FunctionCall {
                         id: None,
-                        name: entry.name.clone(),
-                        namespace: None,
+                        name: parsed.name,
+                        namespace: parsed.namespace,
                         arguments: String::new(),
                         call_id: id,
                         internal_chat_message_metadata_passthrough: None,
@@ -467,10 +471,11 @@ async fn flush(
             // 跳过既无 name 又无参数的空累积（防御）。
             continue;
         }
+        let parsed = ToolName::from_flat_wire_name(&tc.name);
         let call = ResponseItem::FunctionCall {
             id: None,
-            name: tc.name,
-            namespace: None,
+            name: parsed.name,
+            namespace: parsed.namespace,
             arguments: tc.arguments,
             call_id: tc.id,
             internal_chat_message_metadata_passthrough: None,

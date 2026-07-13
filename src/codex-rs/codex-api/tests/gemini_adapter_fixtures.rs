@@ -366,6 +366,41 @@ async fn fixture_tool_call() {
 }
 
 #[tokio::test]
+async fn fixture_namespaced_tool_call_restores_namespace() {
+    // 非 Responses 协议下 harness 把 namespace 工具展平成 `{ns}__{name}` 下发；模型回传的
+    // functionCall.name 也是 flat 串。Gemini SSE parser 应从中还原出 namespace，使派发能命中
+    // 按 namespaced key 注册的派发表（registry / router 不感知展平）。
+    let events = vec![json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{"functionCall": {"name": "context7__get-docs", "args": {"q": "rust"}}}]
+            },
+            "index": 0,
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 3, "totalTokenCount": 13}
+    })];
+    let (evs, err) = run(build_gemini_body(&events)).await;
+
+    assert!(err.is_none(), "namespaced 工具调用不应有错误：{err:?}");
+    // 还原出 namespaced FunctionCall：name=get-docs、namespace=Some(context7)、call_id=call_0。
+    let found = evs.iter().any(|ev| matches!(
+        ev,
+        UnifiedEvent::OutputItemDone(ResponseItem::FunctionCall {
+            name, namespace, call_id, arguments, ..
+        }) if name == "get-docs"
+            && namespace.as_deref() == Some("context7")
+            && call_id == "call_0"
+            && arguments == r#"{"q":"rust"}"#
+    ));
+    assert!(
+        found,
+        "应还原出 namespaced FunctionCall(name=get-docs, namespace=context7)；事件: {evs:?}"
+    );
+}
+
+#[tokio::test]
 async fn fixture_thought_part_becomes_reasoning() {
     // thinking：thought:true part → ReasoningContentDelta；普通 text part → OutputTextDelta。
     // 思考文本不进 assistant Message（仅归一为 reasoning 增量）。
