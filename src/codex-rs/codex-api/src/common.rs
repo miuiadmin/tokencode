@@ -432,6 +432,17 @@ pub struct ChatApiRequest {
 // assistant 消息里的 `tool_use` 块、结果回喂是 user 消息里的 `tool_result` 块。
 // ======================================================================
 
+/// Anthropic 结构化输出的虚拟工具名（adapter 内部 tool-mode 注入，非 registry 工具）。
+///
+/// Anthropic 无原生 JSON-schema 输出约束；adapter 在请求带 `text.format` 时注入此工具
+/// 并强制 `tool_choice` 指向它，迫使模型把结构化结果以 `tool_use.input` 回吐（JSON 对象）。
+/// parser 侧识别此名，把 `tool_use` 还原成 `Message(OutputText)`（input_json 当输出文本），
+/// 使 harness 零感知——不派发该工具、不产出 FunctionCall。
+///
+/// **不含 `__`**：`ToolName::from_flat_wire_name` 按首个 `__` 拆 namespace，若虚拟名含 `__`
+/// 会被误判为 namespaced，导致派发表错位。adapter 与 parser 共用此常量，避免两侧名漂移。
+pub const ANTHROPIC_STRUCTURED_OUTPUT_TOOL: &str = "respond_structured";
+
 /// Anthropic 顶层 system 文本块（`{type:"text", text}`）。
 ///
 /// Anthropic 把系统提示放在顶层 `system` 字段（字符串或内容块数组），而非

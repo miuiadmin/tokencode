@@ -9,6 +9,7 @@
 //! 对 `ResponseItem` 的翻译为编译期穷尽 match：`ResponseItem` 新增/删除变体时本文件编译失败而非静默漏映射。
 
 use crate::auth::SharedAuthProvider;
+use crate::common::ANTHROPIC_STRUCTURED_OUTPUT_TOOL;
 use crate::common::AnthropicApiRequest;
 use crate::common::AnthropicContentBlock;
 use crate::common::AnthropicImageSource;
@@ -58,6 +59,8 @@ pub const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 16_384;
 
 impl From<UnifiedRequest> for AnthropicApiRequest {
     fn from(req: UnifiedRequest) -> Self {
+        // 结构化输出（text.format）：先抓取（req.text 不 move，仅读），后续 tool-mode 注入用。
+        let structured = req.text.as_ref().and_then(|t| t.format.clone());
         // instructions（非空）→ 顶层 system（数组形态，便于后续追加 cache_control）。
         let system = if req.instructions.is_empty() {
             None
@@ -88,6 +91,29 @@ impl From<UnifiedRequest> for AnthropicApiRequest {
         let tool_choice = tools
             .as_ref()
             .and_then(|_| tool_choice_to_anthropic(&req.tool_choice, req.parallel_tool_calls));
+
+        // 结构化输出 tool-mode 注入：Anthropic 无原生 JSON-schema 约束，adapter 内部追加虚拟工具
+        // `respond_structured`（承载 schema）并强制 tool_choice 指向它，迫使模型以 tool_use.input
+        // 回吐结构化 JSON；parser 侧识别此名还原成 Message(OutputText)，harness 零感知。
+        // 直接构造 AnthropicTool（不经 responses_tool_to_anthropic——它会过滤非 function 形态）。
+        // 互斥：强制 tool_choice 使本 turn 真实 tools 不可达（主 agent 循环不设 output_schema，
+        // 仅结构化子流程触发，与工具天然不并发；wire 合法，Anthropic 接受 tools + 强制 tool_choice）。
+        let (tools, tool_choice) = if let Some(fmt) = structured {
+            let mut tools_vec = tools.unwrap_or_default();
+            tools_vec.push(AnthropicTool {
+                name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL.to_string(),
+                description: None,
+                input_schema: fmt.schema,
+            });
+            let forced = AnthropicToolChoice {
+                type_: "tool".to_string(),
+                name: Some(ANTHROPIC_STRUCTURED_OUTPUT_TOOL.to_string()),
+                disable_parallel_tool_use: None,
+            };
+            (Some(tools_vec), Some(forced))
+        } else {
+            (tools, tool_choice)
+        };
 
         AnthropicApiRequest {
             model: req.model,

@@ -14,6 +14,7 @@
 //! - 收尾时（`message_stop`）统一装配 `OutputItemDone(Message)` / `OutputItemDone(FunctionCall)`，
 //!   与 Chat 在 `[DONE]` 冲刷同构（文本走 live delta，工具参数静默累积 + 末尾装配）。
 
+use crate::common::ANTHROPIC_STRUCTURED_OUTPUT_TOOL;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::error::ApiError;
@@ -176,6 +177,11 @@ struct AnthropicStreamState {
     server_model: Option<String>,
     finish_reason: Option<String>,
     usage: UsageAccumulator,
+    /// 本 turn 是否已还原出结构化输出 Message（虚拟工具 respond_structured 的 tool_use）。
+    /// 结构化输出是终态（无工具派发、无后续），强制 end_turn=Some(true)——否则强制
+    /// tool_choice 下 Anthropic 回 stop_reason="tool_use"，会被映射成 end_turn=false，
+    /// 进而触发 core 的 needs_follow_up=true 造成循环重采样。
+    structured_output_done: bool,
 }
 
 // ===== SSE 字节循环 ==========================================================
@@ -519,6 +525,31 @@ async fn flush(
             // 跳过既无 name 又无参数的空累积（防御）。
             continue;
         }
+        // 结构化输出虚拟工具：把 tool_use.input_json 还原成 assistant 文本 Message。
+        // adapter 在带 text.format 时注入该虚拟工具并强制 tool_choice 指向它，模型以
+        // tool_use.input 回吐结构化 JSON；此处把累积的 input_json 串当输出文本，还原成
+        // Message(OutputText)，使 harness 零感知——不派发该工具、不产出 FunctionCall。
+        //
+        // content_block_start 阶段已对该 tool_use 发过 FunctionCall 占位 Added，那是无害 no-op
+        // （core 的 handle_non_tool_response_item(FunctionCall) 返回 None，不设 active_item；
+        // 占位不下泄 UI，Done(Message) 自行补发 started+completed，类型生命周期不串）。
+        if tb.name == ANTHROPIC_STRUCTURED_OUTPUT_TOOL {
+            let message = ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: tb.input_json.clone(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            };
+            if send(tx_event, Ok(ResponseEvent::OutputItemDone(message))).await {
+                return;
+            }
+            // 标记已产出结构化输出：本 turn 终态，末尾 Completed 的 end_turn 强制 Some(true)。
+            state.structured_output_done = true;
+            continue;
+        }
         let parsed = ToolName::from_flat_wire_name(&tb.name);
         let call = ResponseItem::FunctionCall {
             id: None,
@@ -534,15 +565,23 @@ async fn flush(
     }
 
     // 3. Completed：response_id（缺省空串）、usage（缺省 None）、end_turn。
-    let end_turn = match state.finish_reason.as_deref() {
-        // 自然结束（模型主动收尾 / 命中 stop_sequence）：回合结束。
-        Some("end_turn") | Some("stop_sequence") => Some(true),
-        // 已知「未结束 / 非正常截断」：工具待续、达上限、被内容过滤、思考暂停（pause_turn）。
-        Some("tool_use") | Some("max_tokens") | Some("content_filter") | Some("pause_turn") => {
-            Some(false)
+    //
+    // 结构化输出是终态：即便 Anthropic 回 stop_reason="tool_use"（强制 tool_choice 下常见），
+    // 也强制 end_turn=Some(true)——本 turn 已拿到结构化结果，无工具派发、无需后续，
+    // 否则 end_turn=false 会让 core 置 needs_follow_up=true 重采样。
+    let end_turn = if state.structured_output_done {
+        Some(true)
+    } else {
+        match state.finish_reason.as_deref() {
+            // 自然结束（模型主动收尾 / 命中 stop_sequence）：回合结束。
+            Some("end_turn") | Some("stop_sequence") => Some(true),
+            // 已知「未结束 / 非正常截断」：工具待续、达上限、被内容过滤、思考暂停（pause_turn）。
+            Some("tool_use") | Some("max_tokens") | Some("content_filter") | Some("pause_turn") => {
+                Some(false)
+            }
+            // 未知 stop_reason（如网关返回非标准值）：不臆断回合结束，交上层裁决。
+            Some(_) | None => None,
         }
-        // 未知 stop_reason（如网关返回非标准值）：不臆断回合结束，交上层裁决。
-        Some(_) | None => None,
     };
     let token_usage = build_token_usage(&mut state.usage);
     let completed = ResponseEvent::Completed {

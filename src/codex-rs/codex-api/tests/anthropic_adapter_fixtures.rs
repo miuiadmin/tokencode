@@ -31,6 +31,9 @@ use codex_language_model::UnifiedEventStream;
 use codex_language_model::UnifiedReasoning;
 use codex_language_model::UnifiedRequest;
 use codex_language_model::UnifiedRequestOptions;
+use codex_language_model::UnifiedTextControls;
+use codex_language_model::UnifiedTextFormat;
+use codex_language_model::UnifiedTextFormatType;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -1049,4 +1052,124 @@ async fn reasoning_effort_thinking_clamps_to_max_tokens() {
         wire2.get("thinking").is_none(),
         "max_tokens=1024 过小应放弃 thinking（无法满足 1024 思考 + 1024 文本）"
     );
+}
+
+// === 结构化输出（text.format → tool-mode）==================================
+
+/// text.format → adapter 内部注入虚拟工具 `respond_structured`（承载 schema）+ 强制
+/// tool_choice 指向它（即便原本无 tools）。Anthropic 无原生 JSON-schema 约束，借此
+/// 迫使模型以 tool_use.input 回吐结构化 JSON。
+#[test]
+fn request_translation_injects_structured_output_tool() {
+    let schema = json!({"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]});
+    let mut req = sample_unified_request();
+    // 原本无 tools（结构化输出子流程的典型形态）。
+    req.text = Some(UnifiedTextControls {
+        verbosity: None,
+        format: Some(UnifiedTextFormat {
+            r#type: UnifiedTextFormatType::JsonSchema,
+            strict: true,
+            schema: schema.clone(),
+            name: "point".to_string(),
+        }),
+    });
+
+    let api: AnthropicApiRequest = req.into();
+    let json = serde_json::to_value(&api).expect("可序列化");
+
+    // 注入虚拟工具 respond_structured：tools 数组含之，input_schema 为原 schema。
+    let tools = json
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .expect("结构化输出应注入 tools（虚拟工具）");
+    let virtual_tool = tools
+        .iter()
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("respond_structured"))
+        .expect("应有 respond_structured 虚拟工具");
+    assert_eq!(
+        virtual_tool.get("input_schema"),
+        Some(&schema),
+        "虚拟工具 input_schema 应承载原 schema"
+    );
+    assert!(
+        virtual_tool.get("description").is_none(),
+        "虚拟工具不应带 description（skip_serializing_if None）"
+    );
+
+    // tool_choice 强制指向 respond_structured（{type:tool, name}）。
+    let tc = json
+        .get("tool_choice")
+        .expect("结构化输出应强制 tool_choice");
+    assert_eq!(tc.get("type").and_then(|v| v.as_str()), Some("tool"));
+    assert_eq!(
+        tc.get("name").and_then(|v| v.as_str()),
+        Some("respond_structured")
+    );
+}
+
+/// 模型回 tool_use(name=respond_structured, input_json 累积 '{"x":1}') → parser 还原成
+/// `Message(OutputText='{"x":1}')`，**不**产出 FunctionCall（不派发虚拟工具）；
+/// 且 end_turn=Some(true)（结构化输出是终态，避免 stop_reason=tool_use 触发重采样）。
+#[tokio::test]
+async fn fixture_structured_output_restores_message() {
+    let events = vec![
+        json!({
+            "type": "message_start",
+            "message": {"id": "msg_s", "model": "claude-3-5-sonnet", "usage": {"input_tokens": 10, "output_tokens": 1}}
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_s", "name": "respond_structured", "input": {}}
+        }),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"x\":"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "1}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        // 强制 tool_choice 下 Anthropic 通常回 stop_reason="tool_use"（验证：即便如此，
+        // 结构化输出仍应被映射成 end_turn=Some(true) 终态，不触发 core 重采样）。
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": null},
+            "usage": {"output_tokens": 3}
+        }),
+        json!({"type": "message_stop"}),
+    ];
+
+    // 带上 text.format（忠实复现结构化输出子流程的请求形态）。
+    let mut req = sample_unified_request();
+    req.text = Some(UnifiedTextControls {
+        verbosity: None,
+        format: Some(UnifiedTextFormat {
+            r#type: UnifiedTextFormatType::JsonSchema,
+            strict: true,
+            schema: json!({"type": "object"}),
+            name: "point".to_string(),
+        }),
+    });
+    let adapter = AnthropicAdapter::new(
+        FixtureSseTransport::new(build_anthropic_body(&events)),
+        provider(),
+        Arc::new(NoAuth),
+    );
+    let stream = LanguageModel::stream(&adapter, req, sample_unified_options())
+        .await
+        .expect("adapter stream 不应失败");
+    let (evs, err) = drain(stream).await;
+
+    assert!(err.is_none(), "结构化输出流不应有错误：{err:?}");
+    // input_json_delta 累积为 '{"x":1}'，还原成 assistant 文本 Message。
+    expect_assistant_text(&evs, r#"{"x":1}"#);
+    // **不**产出 FunctionCall 的 Done（虚拟工具不经派发）。
+    let fc_done = evs.iter().any(|ev| matches!(
+        ev,
+        UnifiedEvent::OutputItemDone(ResponseItem::FunctionCall { name, .. }) if name == "respond_structured"
+    ));
+    assert!(!fc_done, "结构化输出不应产出 FunctionCall Done（不派发）：{evs:?}");
+    // 终态：end_turn=Some(true)（即便 stop_reason=tool_use）。
+    match evs.iter().find(|ev| matches!(ev, UnifiedEvent::Completed { .. })) {
+        Some(UnifiedEvent::Completed { end_turn, .. }) => {
+            assert_eq!(*end_turn, Some(true), "结构化输出应为终态 end_turn=Some(true)");
+        }
+        other => panic!("应存在 Completed 事件，实际: {other:?}"),
+    }
 }
