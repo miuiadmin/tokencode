@@ -976,6 +976,11 @@ pub enum ResponseItem {
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
         encrypted_content: Option<String>,
+        /// 协议级跨 turn thinking 连续凭证（Anthropic signature / Gemini thoughtSignature）。
+        /// OpenAI 用 encrypted_content 自有 wire key，不动此字段。对 harness 不透明，仅各 adapter 读写。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        continuity_token: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,

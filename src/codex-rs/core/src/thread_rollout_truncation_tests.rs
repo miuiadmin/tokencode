@@ -182,6 +182,7 @@ fn truncates_rollout_from_start_before_nth_user_only() {
             }],
             content: None,
             encrypted_content: None,
+            continuity_token: None,
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCall {

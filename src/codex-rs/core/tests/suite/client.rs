@@ -2967,6 +2967,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
             text: "content".into(),
         }]),
         encrypted_content: None,
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     });
     prompt.input.push(ResponseItem::Message {

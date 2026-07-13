@@ -257,6 +257,7 @@ fn reasoning_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }]),
         encrypted_content: None,
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     }
 }
@@ -269,6 +270,7 @@ fn reasoning_with_encrypted_content(len: usize) -> ResponseItem {
         }],
         content: None,
         encrypted_content: Some("a".repeat(len)),
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     }
 }
@@ -316,6 +318,7 @@ fn filters_non_api_messages() {
                     text: "thinking...".to_string(),
                 }]),
                 encrypted_content: None,
+                continuity_token: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::Message {
@@ -400,6 +403,7 @@ fn reasoning_with_both_encrypted_and_content_uses_encrypted_arm() {
             text: "x".repeat(10_000),
         }]),
         encrypted_content: Some("a".repeat(10_000)),
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     };
     assert_eq!(

@@ -434,6 +434,7 @@ fn parses_reasoning_summary_and_raw_content() {
             text: "raw details".to_string(),
         }]),
         encrypted_content: None,
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     };
 
@@ -467,6 +468,7 @@ fn parses_reasoning_including_raw_content() {
             },
         ]),
         encrypted_content: None,
+        continuity_token: None,
         internal_chat_message_metadata_passthrough: None,
     };
 
