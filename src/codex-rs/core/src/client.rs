@@ -130,7 +130,6 @@ use codex_model_provider::create_model_provider;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::extract_response_debug_context_from_api_error;
@@ -2059,11 +2058,6 @@ impl ModelClientSession {
                 )
                 .await
             }
-            // 当前仅接 OpenAI Responses / Chat / Anthropic / Gemini adapter；其余协议
-            //（Ollama 等）adapter 在后续阶段实现，当前命中即明确报错，避免静默走错路径。
-            unsupported => Err(CodexErr::UnsupportedOperation(format!(
-                "adapter type {unsupported:?} is not implemented yet"
-            ))),
         }
     }
 
