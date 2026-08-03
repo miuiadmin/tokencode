@@ -3,7 +3,7 @@
   "private": true,
   "description": "Locked Codex CLI install boundary for the secure devcontainer.",
   "dependencies": {
-    "tokencode": "0.143.0-alpha.36"
+    "tokencode": "0.0.1"
   },
   "engines": {
     "node": ">=22",

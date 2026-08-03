@@ -9,47 +9,47 @@ importers:
   .:
     dependencies:
       'tokencode':
-        specifier: 0.143.0-alpha.36
-        version: 0.143.0-alpha.36
+        specifier: 0.0.1
+        version: 0.0.1
 
 packages:
 
-  'tokencode@0.143.0-alpha.36':
+  'tokencode@0.0.1':
     resolution: {integrity: sha512-kCJ2NeATd4QBQRmqV04ymdN1ZU3MSwnJQDm/KzjpuzGvCuUVEn7no/T2mRyxQ2x77AACqriNOyPPoM/yufyvNg==}
     engines: {node: '>=16'}
     hasBin: true
 
-  'tokencode@0.143.0-alpha.36-darwin-arm64':
+  'tokencode@0.0.1-darwin-arm64':
     resolution: {integrity: sha512-ZyBqIB6Fb4I0hGb/h65Vu7ePYjHSmGiqqfm+/1djEuxDPkqjfi4wkxYxNYNY+6najyNGN4UijOSTTf19eDCrqw==}
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [darwin]
 
-  'tokencode@0.143.0-alpha.36-darwin-x64':
+  'tokencode@0.0.1-darwin-x64':
     resolution: {integrity: sha512-1/OAtdkAZ5yPI3xqaEFlHuPziS1yCqL2gOZdswE7HTmmwpIxi6Z3FCo60JWDPluIp89z4tftdjq73/OCN0YVcw==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [darwin]
 
-  'tokencode@0.143.0-alpha.36-linux-arm64':
+  'tokencode@0.0.1-linux-arm64':
     resolution: {integrity: sha512-2UgMmdo237o7SCMsfb529cOSEM2HFUgN6OBkv5SBLwfNY1NO2Ex6JnUjlppEXlX6/4cXfZ5qjDghVz5j/+B9zw==}
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [linux]
 
-  'tokencode@0.143.0-alpha.36-linux-x64':
+  'tokencode@0.0.1-linux-x64':
     resolution: {integrity: sha512-vlpNJXIqss800J+32Vy7TUZzv31n61b45OLxmsVQGFkTNLJcjFrj9jDUC7I62eC4F16gLioilefNfv4CdJQOEw==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [linux]
 
-  'tokencode@0.143.0-alpha.36-win32-arm64':
+  'tokencode@0.0.1-win32-arm64':
     resolution: {integrity: sha512-m88q4f3XI5npn1t6OG0nWGHWWAjO5FgjRwxh4hdujbLO6t9CiCNfhfPZIOSsoATbrCNwLC+6S77m3cjbNToPNg==}
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [win32]
 
-  'tokencode@0.143.0-alpha.36-win32-x64':
+  'tokencode@0.0.1-win32-x64':
     resolution: {integrity: sha512-Fp0ecVOyM+VcBi/y4HVvRzhifO9YqRiHzhV3rhtAppC7flh22WPguLC4kmvXYAR0p3RPzbo35M2CedWnkOT+cw==}
     engines: {node: '>=16'}
     cpu: [x64]
@@ -57,29 +57,29 @@ packages:
 
 snapshots:
 
-  'tokencode@0.143.0-alpha.36':
+  'tokencode@0.0.1':
     optionalDependencies:
-      'tokencode-darwin-arm64': 'tokencode@0.143.0-alpha.36-darwin-arm64'
-      'tokencode-darwin-x64': 'tokencode@0.143.0-alpha.36-darwin-x64'
-      'tokencode-linux-arm64': 'tokencode@0.143.0-alpha.36-linux-arm64'
-      'tokencode-linux-x64': 'tokencode@0.143.0-alpha.36-linux-x64'
-      'tokencode-win32-arm64': 'tokencode@0.143.0-alpha.36-win32-arm64'
-      'tokencode-win32-x64': 'tokencode@0.143.0-alpha.36-win32-x64'
+      'tokencode-darwin-arm64': 'tokencode@0.0.1-darwin-arm64'
+      'tokencode-darwin-x64': 'tokencode@0.0.1-darwin-x64'
+      'tokencode-linux-arm64': 'tokencode@0.0.1-linux-arm64'
+      'tokencode-linux-x64': 'tokencode@0.0.1-linux-x64'
+      'tokencode-win32-arm64': 'tokencode@0.0.1-win32-arm64'
+      'tokencode-win32-x64': 'tokencode@0.0.1-win32-x64'
 
-  'tokencode@0.143.0-alpha.36-darwin-arm64':
+  'tokencode@0.0.1-darwin-arm64':
     optional: true
 
-  'tokencode@0.143.0-alpha.36-darwin-x64':
+  'tokencode@0.0.1-darwin-x64':
     optional: true
 
-  'tokencode@0.143.0-alpha.36-linux-arm64':
+  'tokencode@0.0.1-linux-arm64':
     optional: true
 
-  'tokencode@0.143.0-alpha.36-linux-x64':
+  'tokencode@0.0.1-linux-x64':
     optional: true
 
-  'tokencode@0.143.0-alpha.36-win32-arm64':
+  'tokencode@0.0.1-win32-arm64':
     optional: true
 
-  'tokencode@0.143.0-alpha.36-win32-x64':
+  'tokencode@0.0.1-win32-x64':
     optional: true

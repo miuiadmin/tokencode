@@ -1,6 +1,6 @@
 {
   "name": "tokencode",
-  "version": "0.0.0-dev",
+  "version": "0.0.1",
   "description": "TokenCode is a terminal-based coding agent that runs locally on your computer.",
   "license": "Apache-2.0",
   "bin": {

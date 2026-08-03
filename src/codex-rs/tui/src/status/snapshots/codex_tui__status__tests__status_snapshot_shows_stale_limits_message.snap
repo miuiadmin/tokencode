@@ -5,7 +5,7 @@ expression: sanitized
 /status
 
 ╭─────────────────────────────────────────────────────────────────────────────╮
-│  >_ TokenCode (v0.143.0-alpha.36)                                           │
+│  >_ TokenCode (v0.0.1)                                           │
 │  Model:            gpt-5.1-codex-max (reasoning none, summaries auto)       │
 │  Directory: [[workspace]]                                                   │
 │  Permissions:      Custom (workspace with network access, Ask for approval) │

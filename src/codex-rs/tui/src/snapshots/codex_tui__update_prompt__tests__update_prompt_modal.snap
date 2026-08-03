@@ -3,7 +3,7 @@ source: tui/src/update_prompt.rs
 expression: terminal.backend()
 ---
 
-  ✨ Update available! 0.143.0-alpha.36 -> 9.9.9
+  ✨ Update available! 0.0.1 -> 9.9.9
 
   Release notes: h                                                              
                                                          

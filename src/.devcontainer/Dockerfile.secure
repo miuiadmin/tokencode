@@ -5,7 +5,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG NODE_MAJOR=22
 ARG RUST_TOOLCHAIN=1.95.0
 # Keep this in sync with .devcontainer/codex-install/package.json and pnpm-lock.yaml.
-ARG CODEX_NPM_VERSION=0.143.0-alpha.36
+ARG CODEX_NPM_VERSION=0.0.1
 
 ENV TZ="$TZ"
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0

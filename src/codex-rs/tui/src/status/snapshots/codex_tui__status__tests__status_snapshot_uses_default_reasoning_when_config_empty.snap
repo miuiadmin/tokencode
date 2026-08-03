@@ -5,7 +5,7 @@ expression: sanitized
 /status
 
 ╭─────────────────────────────────────────────────────────────────────────────╮
-│  >_ TokenCode (v0.143.0-alpha.36)                                           │
+│  >_ TokenCode (v0.0.1)                                           │
 │  Remote:           unix:///tmp/codex-home/app-server-control/app-server-    │
 │                    control.sock (v0.133.0)                                  │
 │                                                                             │
