@@ -103,6 +103,7 @@ fn test_model_client_with_thread_id(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        /*progress_channel*/ false,
         /*attestation_provider*/ None,
     )
 }
@@ -147,6 +148,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        /*progress_channel*/ false,
         /*attestation_provider*/ None,
     );
     let prompt = Prompt {
@@ -813,6 +815,7 @@ fn model_client_with_counting_attestation(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        /*progress_channel*/ false,
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),
@@ -876,4 +879,57 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
         None,
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn progress_channel_rewrites_native_fc_to_json() {
+    use super::ContentItem;
+    use super::ResponseItem;
+    use super::rewrite_history_for_progress_channel;
+    use codex_protocol::models::FunctionCallOutputPayload;
+
+    let mut items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "shell".to_string(),
+            namespace: None,
+            arguments: r#"{"command":["ls"]}"#.to_string(),
+            call_id: "call_1".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "call_1".to_string(),
+            output: FunctionCallOutputPayload::from_text("file_a\nfile_b".to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+    rewrite_history_for_progress_channel(&mut items);
+
+    // FunctionCall → assistant Message，文本含统一 schema 的 action JSON。
+    let assistant_text = match &items[0] {
+        ResponseItem::Message { role, content, .. } => {
+            assert_eq!(role, "assistant");
+            match &content[0] {
+                ContentItem::OutputText { text } => text.clone(),
+                _ => panic!("expected OutputText"),
+            }
+        }
+        _ => panic!("expected assistant Message"),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&assistant_text).unwrap();
+    assert_eq!(parsed["action"]["tool"], "shell");
+    assert_eq!(parsed["action"]["arguments"]["command"][0], "ls");
+
+    // FunctionCallOutput → user Message，文本为（截断后的）output。
+    match &items[1] {
+        ResponseItem::Message { role, content, .. } => {
+            assert_eq!(role, "user");
+            match &content[0] {
+                ContentItem::InputText { text } => assert_eq!(text, "file_a\nfile_b"),
+                _ => panic!("expected InputText"),
+            }
+        }
+        _ => panic!("expected user Message"),
+    }
 }

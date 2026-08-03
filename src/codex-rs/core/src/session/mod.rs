@@ -207,6 +207,7 @@ mod input_queue;
 mod mcp;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod progress_channel;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;

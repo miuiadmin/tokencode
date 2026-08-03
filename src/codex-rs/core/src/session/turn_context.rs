@@ -154,6 +154,15 @@ impl TurnContext {
         self.permission_profile.clone()
     }
 
+    /// 进度副信道门控(P3b §12.3):是否启用统一 JSON schema 输出 + progress 副信道消费。
+    /// 经 `config.features` 读——使 turn loop / `handle_output_item_done` 等非 client.rs
+    /// 路径可达(P3a 时门控只在 `ModelClientState`,turn loop 读不到;经 config 此处单点读出)。
+    pub(crate) fn progress_channel_enabled(&self) -> bool {
+        self.config
+            .features
+            .enabled(codex_features::Feature::ProgressChannel)
+    }
+
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
         self.permission_profile.file_system_sandbox_policy()
     }

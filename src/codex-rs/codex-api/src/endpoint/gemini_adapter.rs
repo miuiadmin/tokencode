@@ -168,6 +168,21 @@ fn strip_gemini_response_schema_keys(schema: &mut Value) {
 fn sanitize_gemini_schema(schema: &mut Value) {
     match schema {
         Value::Object(obj) => {
+            // ⓪ type 数组（如 ["object","null"]）归一为单 type + nullable:true。Gemini
+            //    responseSchema 只认 OpenAPI 3.0 的 `nullable`，不认 JSON Schema 的 type 数组表 null。
+            if let Some(arr) = obj.get_mut("type").and_then(|v| v.as_array_mut()) {
+                // 取首个非 null 类型；全 null 退化为 "string"。
+                let primary = arr
+                    .iter()
+                    .find_map(|v| v.as_str().filter(|s| *s != "null"))
+                    .unwrap_or("string")
+                    .to_string();
+                let nullable = arr.iter().any(|v| v.as_str() == Some("null"));
+                obj.insert("type".to_string(), Value::String(primary));
+                if nullable {
+                    obj.insert("nullable".to_string(), Value::Bool(true));
+                }
+            }
             // ① enum stringify + type 改写为 string（须在取 type 之前做，让后续分支按新 type 走）。
             if let Some(enum_arr) = obj.get_mut("enum").and_then(|v| v.as_array_mut()) {
                 for item in enum_arr.iter_mut() {
@@ -671,5 +686,37 @@ impl<T: HttpTransport> LanguageModel for GeminiAdapter<T> {
             // Gemini parser 已产出 ResponseEvent，事件归一复用 Responses 同一份逻辑。
             Ok(response_stream_to_unified(api_stream))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_gemini_schema;
+    use serde_json::json;
+
+    #[test]
+    fn sanitize_normalizes_nullable_type_array() {
+        let mut schema = json!({
+            "type": ["object", "null"],
+            "properties": {
+                "action": {"type": ["object", "null"]}
+            }
+        });
+        sanitize_gemini_schema(&mut schema);
+        // 顶层：type 数组归一为单 type + nullable:true（Gemini 只认 OpenAPI 3.0 的 nullable）。
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["nullable"], true);
+        // 嵌套 properties 里的同款 type 数组也被递归归一。
+        assert_eq!(schema["properties"]["action"]["type"], "object");
+        assert_eq!(schema["properties"]["action"]["nullable"], true);
+    }
+
+    #[test]
+    fn sanitize_keeps_non_nullable_type_untouched() {
+        let mut schema = json!({"type": "string", "enum": ["a", "b"]});
+        sanitize_gemini_schema(&mut schema);
+        assert_eq!(schema["type"], "string");
+        assert!(schema.get("nullable").is_none());
+        assert_eq!(schema["enum"], json!(["a", "b"]));
     }
 }

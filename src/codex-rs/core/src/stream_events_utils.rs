@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use crate::parse_turn_item;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::parallel::ToolCallRuntime;
-use crate::tools::router::ToolRouter;
+use crate::tools::router::{ToolCall, ToolRouter};
 use codex_memories_read::citations::parse_memory_citation;
 use codex_memories_read::citations::thread_ids_from_memory_citation;
 use codex_protocol::error::CodexErr;
@@ -28,6 +29,12 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ContentItem;
+use codex_protocol::protocol::{DigestEntry, DigestKind, TurnRef};
+use codex_protocol::ToolName;
+use codex_tools::flatten_namespaces_for_flat_wire;
+use codex_tools::{ToolPayload, ToolSpec};
+use serde_json::Value;
 use codex_rollout::state_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_stream_parser::strip_proposed_plan_blocks;
@@ -401,6 +408,220 @@ pub(crate) async fn finalize_non_tool_response_item(
     })
 }
 
+// ===== 进度副信道 P3b：响应侧消费接管（替代 P3a decorator）=====
+//
+// decorator 退场后，turn loop 直接消费模型按统一 schema 输出的 envelope
+// `{action, progress_patch, digest_override}`：一次性三路分流，避免先 rewrite 丢 patch。
+// 合成物与原生 FunctionCall / CustomToolCall 字节级等价，故 turn 循环与工具执行子系统零改动。
+
+/// 构建「工具 flat 名 → 是否自由格式（Freeform）」映射，供合成 FC 时按工具 kind 分流
+/// （Freeform → CustomToolCall，否则 → FunctionCall）。平移自原 client.rs（decorator 退场）。
+fn build_tool_kind_map(tools: &[ToolSpec]) -> HashMap<String, bool> {
+    flatten_namespaces_for_flat_wire(tools)
+        .into_iter()
+        .map(|spec| {
+            (
+                spec.name().to_string(),
+                matches!(spec, ToolSpec::Freeform(_)),
+            )
+        })
+        .collect()
+}
+
+/// 解析 envelope 的 `action` 字段，按工具 kind 合成原生 FunctionCall / CustomToolCall。
+/// 返回 `(合成项, tool flat 名, arguments)`：tool 名 + arguments 供 files_touched 推导（§12.7 step 4）。
+/// `action` 缺 tool / 未知工具 → None（调用侧透传原 Message，不执行）。
+fn synthesize_call_from_action(
+    action: &Value,
+    kinds: &HashMap<String, bool>,
+) -> Option<(ResponseItem, String, Value)> {
+    let tool = action.get("tool").and_then(|t| t.as_str())?;
+    let is_freeform = *kinds.get(tool)?;
+    let tool = tool.to_string();
+    let arguments = action.get("arguments").cloned().unwrap_or(Value::Null);
+    let ToolName { name, namespace } = ToolName::from_flat_wire_name(&tool);
+    let call_id = format!("{tool}-{}", uuid::Uuid::new_v4());
+    let item = if is_freeform {
+        // apply_patch 等 Freeform 工具的 input 是 lark 文本而非 JSON：约定模型把 raw 文本塞进
+        // arguments["input"]，系统据此提取；模型乱填时退化为整段 JSON 字符串。
+        let input = arguments
+            .get("input")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| arguments.to_string());
+        ResponseItem::CustomToolCall {
+            id: None,
+            status: Some("completed".to_string()),
+            call_id,
+            name,
+            namespace,
+            input,
+            internal_chat_message_metadata_passthrough: None,
+        }
+    } else {
+        ResponseItem::FunctionCall {
+            id: None,
+            name,
+            namespace,
+            arguments: serde_json::to_string(&arguments).unwrap_or_default(),
+            call_id,
+            internal_chat_message_metadata_passthrough: None,
+        }
+    };
+    Some((item, tool, arguments))
+}
+
+/// 构建「工具 flat 名 → ToolSpec」映射，供执行前二次校验按 spec 分流（§12.8）。
+fn build_tool_spec_map(tools: &[ToolSpec]) -> HashMap<String, ToolSpec> {
+    flatten_namespaces_for_flat_wire(tools)
+        .into_iter()
+        .map(|spec| (spec.name().to_string(), spec))
+        .collect()
+}
+
+/// 执行前二次校验（P3b §12.8，strict=false 下唯一参数约束层 L7）。
+///
+/// progress_channel 下对合成的 FC 在 `build_tool_call`→`handle_tool_call` 派发前校验：
+/// - **Function 工具**：`parameters.required` 字段齐备性（v1 轻量；type/enum 留后续）；
+/// - **Freeform apply_patch**：顺 lark 语法解析（`parse_patch`），失败回流；
+/// - **Freeform code_mode exec 等**：input 非空。
+/// 失败返回回流报错 `Some(msg)`；通过返回 `None`。语义/危险模式（越界路径 / 越权命令）由
+/// handler 内 `assess_patch_safety` / `exec_policy` 正交兜底（更外层），本层不重复。
+fn validate_progress_channel_tool_call(
+    specs: &HashMap<String, ToolSpec>,
+    call: &ToolCall,
+) -> Option<String> {
+    let flat = call.tool_name.to_flat_wire_name();
+    let spec = specs.get(&flat)?;
+    match spec {
+        ToolSpec::Function(tool) => {
+            let required = tool.parameters.required.as_ref()?;
+            let args: Value = match &call.payload {
+                ToolPayload::Function { arguments } => {
+                    serde_json::from_str(arguments).unwrap_or(Value::Null)
+                }
+                _ => return None,
+            };
+            for req in required {
+                if args.get(req.as_str()).is_none() {
+                    return Some(format!("进度副信道校验：工具 {flat} 缺必填字段「{req}」"));
+                }
+            }
+            None
+        }
+        ToolSpec::Freeform(_) => {
+            let input = match &call.payload {
+                ToolPayload::Custom { input } => input.as_str(),
+                _ => return None,
+            };
+            if flat == "apply_patch" {
+                if let Err(err) = codex_apply_patch::parse_patch(input) {
+                    return Some(format!("进度副信道校验：apply_patch 语法解析失败：{err}"));
+                }
+            } else if input.trim().is_empty() {
+                return Some(format!("进度副信道校验：工具 {flat} 的 input 为空"));
+            }
+            None
+        }
+        // Namespace/ToolSearch/ImageGeneration/WebSearch：非合成主流路径，v1 不校验。
+        _ => None,
+    }
+}
+
+/// 进度副信道响应侧消费（§12.3 step 4 三路分流）。
+///
+/// 仅处理 assistant `Message{OutputText}` 且文本可解析为 JSON envelope 的项；其余原样返回。
+/// 一次性解析 `{action, progress_patch, digest_override}`：
+/// - `progress_patch` → `apply_progress_patch`（写 ProgressState + warnings 回流）；
+/// - `digest_override` → `consume_digest_override`（延迟一步覆盖上一 step 草稿）；
+/// - `action ≠ null` → 合成原生 FC + `derive_files_touched_from_args`，返回 FC（进 build_tool_call 派发）；
+/// - `action == null`（对话轮 S2）→ 生成 kind=dialog 草稿落 L0，返回原 Message（→ Ok(None) 显示）。
+///
+/// 透传条件（与 P3a fallback 同行为）：非 Message / 非 JSON / action 缺 tool 或未知工具 → 原样。
+async fn consume_progress_channel_output(
+    ctx: &HandleOutputCtx,
+    item: ResponseItem,
+) -> ResponseItem {
+    let text = match &item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => match content.as_slice() {
+            [ContentItem::OutputText { text }] => text.as_str(),
+            _ => return item,
+        },
+        _ => return item,
+    };
+    let parsed = match serde_json::from_str::<Value>(text) {
+        Ok(v) => v,
+        Err(_) => return item, // 非 JSON → 透传（可见 JSON 文本，不崩）。
+    };
+
+    let turn_ref = TurnRef {
+        turn_id: ctx.turn_context.sub_id.clone(),
+        item_index: None,
+    };
+
+    // (b) progress_patch：object 才应用（null / 缺失跳过）。
+    if let Some(patch) = parsed.get("progress_patch").filter(|v| v.is_object()) {
+        ctx.sess
+            .apply_progress_patch(patch.clone(), turn_ref.clone())
+            .await;
+    }
+    // (c) digest_override：非 null 才消费（延迟一步覆盖，多数轮省略）。
+    if let Some(override_val) = parsed.get("digest_override").filter(|v| !v.is_null()) {
+        ctx.sess
+            .consume_digest_override(override_val.clone(), turn_ref.clone())
+            .await;
+    }
+
+    // (a)/(a') action 三态。
+    match parsed.get("action").filter(|v| !v.is_null()) {
+        Some(action_val) => {
+            // action ≠ null → 合成 FC + 推导 files_touched。
+            let kinds = build_tool_kind_map(&ctx.tool_runtime.model_visible_specs());
+            match synthesize_call_from_action(action_val, &kinds) {
+                Some((call, tool, args)) => {
+                    let _confidence = ctx
+                        .sess
+                        .derive_files_touched_from_args(&tool, &args)
+                        .await;
+                    call
+                }
+                None => item, // 未知工具 → 透传（可见，不执行）。
+            }
+        }
+        None => {
+            // (a') action == null → 对话轮：生成 kind=dialog 草稿落 L0（§12.5）。
+            // 摘要优先取 progress_patch.next_step / intent；缺则截断 envelope 文本兜底。
+            let summary = parsed
+                .get("progress_patch")
+                .and_then(|p| p.get("next_step"))
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    parsed
+                        .get("progress_patch")
+                        .and_then(|p| p.get("intent"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| text.chars().take(300).collect::<String>());
+            ctx.sess
+                .append_digest_to_l0(
+                    DigestEntry {
+                        kind: DigestKind::Dialog,
+                        tool: None,
+                        brief_result: None,
+                        dialog_summary: Some(summary),
+                        turn_ref: turn_ref.clone(),
+                        sequence: 0, // append_digest_to_l0 回填
+                        confidence: None,
+                    },
+                    Vec::new(),
+                )
+                .await;
+            item // 原样继续（→ Ok(None)，作为 message 显示）
+        }
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn handle_output_item_done(
     ctx: &mut HandleOutputCtx,
@@ -409,6 +630,14 @@ pub(crate) async fn handle_output_item_done(
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
+
+    // 进度副信道（P3b §12.3 step 4）：decorator 退场后，turn loop 直接消费 envelope
+    // {action, progress_patch, digest_override}。flag 关时原样透传，行为零变化。
+    let item = if ctx.turn_context.progress_channel_enabled() {
+        consume_progress_channel_output(ctx, item).await
+    } else {
+        item
+    };
 
     match ToolRouter::build_tool_call(item.clone()) {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
@@ -431,6 +660,38 @@ pub(crate) async fn handle_output_item_done(
 
             record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
                 .await;
+
+            // 进度副信道（P3b §12.8）：执行前二次校验（strict=false 下唯一参数约束层 L7）。
+            // 失败 → 合成 FCO（用合成 FC 的 call_id，S7）回模型自纠，不执行。
+            if ctx.turn_context.progress_channel_enabled() {
+                let specs = build_tool_spec_map(&ctx.tool_runtime.model_visible_specs());
+                if let Some(err_msg) = validate_progress_channel_tool_call(&specs, &call) {
+                    let response = ResponseInputItem::FunctionCallOutput {
+                        call_id: call.call_id.clone(),
+                        output: FunctionCallOutputPayload {
+                            body: FunctionCallOutputBody::Text(err_msg),
+                            success: Some(false),
+                        },
+                    };
+                    if let Some(response_item) = response_input_to_response_item(&response) {
+                        ctx.sess
+                            .record_conversation_items(
+                                &ctx.turn_context,
+                                std::slice::from_ref(&response_item),
+                            )
+                            .await;
+                        // 校验失败也走 FCO 回流（记 last_error + 草稿），与副路径一致。
+                        ctx.sess
+                            .progress_channel_fco_reflow_failure(
+                                ctx.turn_context.as_ref(),
+                                &response_item,
+                            )
+                            .await;
+                    }
+                    output.needs_follow_up = true;
+                    return Ok(output);
+                }
+            }
 
             let cancellation_token = ctx.cancellation_token.child_token();
             let tool_future: InFlightFuture<'static> = Box::pin(
@@ -495,6 +756,16 @@ pub(crate) async fn handle_output_item_done(
             record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
                 .await;
             if let Some(response_item) = response_input_to_response_item(&response) {
+                // 进度副信道（P3b §12.7 step 5 副路径）：RespondToModel = 结构化失败，
+                // message 即 brief；必记 last_error + 草稿落 L0（call_id 空串，S7 副路径）。
+                if ctx.turn_context.progress_channel_enabled() {
+                    ctx.sess
+                        .progress_channel_fco_reflow_failure(
+                            ctx.turn_context.as_ref(),
+                            &response_item,
+                        )
+                        .await;
+                }
                 ctx.sess
                     .record_conversation_items(
                         &ctx.turn_context,

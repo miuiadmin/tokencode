@@ -280,7 +280,8 @@ impl Session {
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
-                | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+                | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::ProgressDigest(_) => {}
             }
 
             if base_replacement_history.is_some()
@@ -368,7 +369,8 @@ impl Session {
                 RolloutItem::EventMsg(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::SessionMeta(_) => {}
+                | RolloutItem::SessionMeta(_)
+                | RolloutItem::ProgressDigest(_) => {}
             }
         }
 
@@ -415,7 +417,8 @@ impl Session {
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
                 | RolloutItem::TurnContext(_)
-                | RolloutItem::EventMsg(_) => {
+                | RolloutItem::EventMsg(_)
+                | RolloutItem::ProgressDigest(_) => {
                     unreachable!("only world-state replay items are collected")
                 }
             }

@@ -263,13 +263,22 @@ pub(crate) async fn run_turn(
             }
 
             // Construct the input that we will send to the model.
-            let sampling_request_input: Vec<ResponseItem> = async {
+            let mut sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
                     .await
                     .for_prompt(&turn_context.model_info.input_modalities)
             }
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
+            // 进度副信道（P3b §12.6）：step 顶部注入全量 ProgressState（assistant Message
+            // prepend，S10 避被三 adapter 静默丢 system）。run_turn 非 compaction 路径
+            // （!is_compaction 守卫结构性满足）。注入只读全量态，与 P2 rewrite_history
+            // （改历史段）正交；flag 关时零行为。
+            if turn_context.progress_channel_enabled()
+                && let Some(injection) = sess.render_progress_injection().await
+            {
+                sampling_request_input.insert(0, injection);
+            }
 
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
@@ -1771,6 +1780,11 @@ async fn drain_in_flight(
         match res {
             Ok(response_input) => {
                 let response_item = response_input.into();
+                // 进度副信道（P3b §12.7 step 5）：FCO 回流推导 last_error + 草稿落 L0。
+                if turn_context.progress_channel_enabled() {
+                    sess.progress_channel_fco_reflow(turn_context.as_ref(), &response_item)
+                        .await;
+                }
                 sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
                     .await;
                 mark_thread_memory_mode_polluted_if_external_context(

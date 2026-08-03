@@ -63,6 +63,7 @@ use codex_api::TransportError;
 use codex_api::WebsocketTelemetry;
 use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
+use codex_api::create_progress_channel_text_param;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_language_model::AdapterType;
@@ -78,9 +79,12 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
 
 use codex_protocol::ThreadId;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ContentItem;
+use serde_json::Value;
+use serde_json::json;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -90,8 +94,10 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::build_progress_channel_schema;
 use codex_tools::create_tools_json_for_responses_api;
 use codex_tools::flatten_namespaces_for_flat_wire;
+use codex_tools::render_tool_catalog;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -208,10 +214,115 @@ struct ModelClientState {
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
     item_ids_enabled: bool,
+    progress_channel: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
+}
+
+/// 结构化进度副信道回喂时，工具输出截断到该字符数（防止单条 output 胀 token；调参留 P5）。
+const PROGRESS_CHANNEL_OUTPUT_TRUNCATE: usize = 4000;
+
+/// 把工具输出截断到 [`PROGRESS_CHANNEL_OUTPUT_TRUNCATE`] 字符，超出则追加截断标记。
+fn truncate_for_progress_channel(text: String) -> String {
+    if text.chars().count() <= PROGRESS_CHANNEL_OUTPUT_TRUNCATE {
+        return text;
+    }
+    let mut truncated: String = text.chars().take(PROGRESS_CHANNEL_OUTPUT_TRUNCATE).collect();
+    truncated.push_str("\n…(已截断)");
+    truncated
+}
+
+/// 把历史里的原生 function calling 改写成统一 schema 的 JSON 形态（结构化进度副信道回喂）。
+///
+/// 逐变体保序、无需 call_id 配对：模型每轮看到全程 JSON 形态、不漂移回原生 FC（§6.3 回喂策略 C）。
+/// 数据是协议无关的 canonical `ResponseItem`，三家 adapter 自动兼容。
+fn rewrite_history_for_progress_channel(items: &mut [ResponseItem]) {
+    for item in items.iter_mut() {
+        let rewritten = match item {
+            ResponseItem::FunctionCall {
+                name,
+                namespace,
+                arguments,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                let flat = ToolName::new(namespace.clone(), name.clone()).to_flat_wire_name();
+                let arguments = serde_json::from_str::<Value>(arguments.as_str())
+                    .unwrap_or_else(|_| Value::String(arguments.clone()));
+                Some(ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: json!({"action": {"tool": flat, "arguments": arguments}}).to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough:
+                        internal_chat_message_metadata_passthrough.take(),
+                })
+            }
+            ResponseItem::CustomToolCall {
+                name,
+                namespace,
+                input,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                // apply_patch 等 freeform 工具的 input 是 lark 文本而非 JSON，作字符串值嵌入。
+                let flat = ToolName::new(namespace.clone(), name.clone()).to_flat_wire_name();
+                Some(ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: json!({"action": {"tool": flat, "arguments": input.clone()}})
+                            .to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough:
+                        internal_chat_message_metadata_passthrough.take(),
+                })
+            }
+            ResponseItem::FunctionCallOutput {
+                output,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                let text = output.text_content().unwrap_or("").to_string();
+                Some(ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: truncate_for_progress_channel(text),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough:
+                        internal_chat_message_metadata_passthrough.take(),
+                })
+            }
+            ResponseItem::CustomToolCallOutput {
+                output,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                let text = output.text_content().unwrap_or("").to_string();
+                Some(ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: truncate_for_progress_channel(text),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough:
+                        internal_chat_message_metadata_passthrough.take(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(new_item) = rewritten {
+            *item = new_item;
+        }
+    }
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -429,6 +540,7 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
         item_ids_enabled: bool,
+        progress_channel: bool,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
     ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
@@ -451,6 +563,7 @@ impl ModelClient {
                 include_timing_metrics,
                 beta_features_header,
                 item_ids_enabled,
+                progress_channel,
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
@@ -575,6 +688,7 @@ impl ModelClient {
             settings.summary,
             settings.service_tier,
             responses_metadata,
+            /*is_compaction*/ true,
         )?;
         let ResponsesApiRequest {
             model,
@@ -588,7 +702,7 @@ impl ModelClient {
             text,
             ..
         } = request;
-        self.prepare_response_items_for_request(&mut input, /*store*/ false);
+        self.prepare_response_items_for_request(&mut input, /*store*/ false, /*is_compaction*/ true);
         let payload = ApiCompactionInput {
             model: &model,
             input: &input,
@@ -852,6 +966,10 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        // 是否为「对话历史压缩」请求：压缩是内部总结任务，不参与结构化进度副信道
+        // （其 output_schema 恰为 None，但被误判为正常 turn 会强制按增量协议 schema 输出，
+        // 破坏「总结历史」语义）。
+        is_compaction: bool,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
         if !provider_info.is_openai() {
@@ -869,8 +987,39 @@ impl ModelClient {
         } else {
             prompt.tools.clone()
         };
+        // 结构化进度副信道：关闭原生 function calling（tools 置空、tool_choice=none），
+        // 工具目录编进 instructions，统一输出 schema 经 text.format 下发。守卫条件：
+        // - output_schema 为 None（guardian / 子 agent 的终态结构化 turn 仍走原生 text.format）；
+        // - 非 compaction（压缩 prompt 的 output_schema 也是 None，但它是内部总结任务，
+        //   不该走增量协议——否则会被强制按 {action,progress_patch,digest_override} 输出）。
+        let progress_channel = self.state.progress_channel
+            && prompt.output_schema.is_none()
+            && !is_compaction;
         let tools = create_tools_json_for_responses_api(&visible_tools)?;
-        let (instructions, tools) = if model_info.use_responses_lite {
+        // 进度副信道下原生 FC 已关，工具靠 instructions 目录 + schema enum 文本下发。
+        // Responses 协议常规不展平 namespace（wire 原生支持），但 FC 关闭后 wire 不再携带
+        // namespace 结构，模型只能从文本读到工具名——故此处统一展平成 flat 名，使目录/schema
+        // 的工具名与历史回喂（rewrite_history_for_progress_channel 产 flat 名）一致；否则
+        // schema enum 对 namespace 工具只拿到 namespace 名（如 "demo"），丢失内部工具。
+        let progress_tools = if progress_channel {
+            flatten_namespaces_for_flat_wire(&visible_tools)
+        } else {
+            Vec::new()
+        };
+        let (instructions, tools, tool_choice) = if progress_channel {
+            let mut instr = prompt.base_instructions.text.clone();
+            instr.push_str(&render_tool_catalog(&progress_tools));
+            instr.push_str("\n\n# 输出协议\n");
+            instr.push_str(
+                "请每一步按统一 JSON schema 输出 `{action, progress_patch, digest_override}`：\n\
+                 - `action.tool` 从上方工具目录选一个，`action.arguments` 填该工具参数；\n\
+                 - 无需调用工具时 `action` 置 null；\n\
+                 - `progress_patch` 增量更新当前进度（intent / todo_ops / assumptions / next_step）；\n\
+                 - `digest_override` 用于覆盖系统侧进度摘要，无则置 null。\n\
+                 请勿使用原生 function calling，统一走上述 schema。",
+            );
+            (instr, None, "none".to_string())
+        } else if model_info.use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
                 role: "developer".to_string(),
@@ -888,9 +1037,9 @@ impl ModelClient {
                 });
             }
             input.splice(0..0, prefix);
-            (String::new(), None)
+            (String::new(), None, "auto".to_string())
         } else {
-            (prompt.base_instructions.text.clone(), Some(tools))
+            (prompt.base_instructions.text.clone(), Some(tools), "auto".to_string())
         };
         let reasoning = Self::build_reasoning(model_info, effort, summary);
         // `include` 仅对 Responses 协议有意义（`reasoning.encrypted_content` 是
@@ -912,11 +1061,13 @@ impl ModelClient {
             }
             None
         };
-        let text = create_text_param_for_request(
-            verbosity,
-            &prompt.output_schema,
-            prompt.output_schema_strict,
-        );
+        let text = if progress_channel {
+            let tool_names: Vec<String> =
+                progress_tools.iter().map(|t| t.name().to_string()).collect();
+            create_progress_channel_text_param(build_progress_channel_schema(&tool_names))
+        } else {
+            create_text_param_for_request(verbosity, &prompt.output_schema, prompt.output_schema_strict)
+        };
         let prompt_cache_key = Some(self.prompt_cache_key());
         let service_tier = model_info.service_tier_for_request(service_tier);
         let request = ResponsesApiRequest {
@@ -924,7 +1075,7 @@ impl ModelClient {
             instructions,
             input,
             tools,
-            tool_choice: "auto".to_string(),
+            tool_choice,
             // parallel_tool_calls：模型能力（`supports_parallel_tool_calls`）如实下发到中立字段，
             // 各 adapter 翻译为自家并行语义（Anthropic 的 `disable_parallel_tool_use`、Chat 直传、
             // Gemini 由 toolConfig 承载）。末尾 `&& !use_responses_lite` 是 OpenAI responses-lite
@@ -944,7 +1095,21 @@ impl ModelClient {
         Ok(request)
     }
 
-    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
+    fn prepare_response_items_for_request(
+        &self,
+        input: &mut [ResponseItem],
+        store: bool,
+        // 是否为「对话历史压缩」请求：压缩是内部总结任务，历史不参与进度副信道改写
+        // （改写成 JSON 形态会干扰压缩的总结准确性）。
+        is_compaction: bool,
+    ) {
+        // 结构化进度副信道开启时，把历史里的原生 function calling 改写成统一 schema 的 JSON 形态，
+        // 让模型每轮看到全程 JSON 形态、不漂移回原生 FC（§6.3 回喂策略 C）。改写发生在请求构建层，
+        // 数据是协议无关的 canonical ResponseItem，三家 adapter 自动兼容（逐变体保序，无需 call_id 配对）。
+        if self.state.progress_channel && !is_compaction {
+            rewrite_history_for_progress_channel(input);
+        }
+
         if self.state.item_ids_enabled || store {
             return;
         }
@@ -1668,10 +1833,11 @@ impl ModelClientSession {
             summary,
             service_tier.clone(),
             responses_metadata,
+            /*is_compaction*/ false,
         )?;
         let store = request.store;
         self.client
-            .prepare_response_items_for_request(&mut request.input, store);
+            .prepare_response_items_for_request(&mut request.input, store, /*is_compaction*/ false);
         let request_session_telemetry =
             session_telemetry_for_request(session_telemetry, &request);
         let inference_trace_attempt = inference_trace.start_attempt();
@@ -1758,6 +1924,7 @@ impl ModelClientSession {
             summary,
             service_tier.clone(),
             responses_metadata,
+            /*is_compaction*/ false,
         )?;
         let request_session_telemetry = if warmup {
             // `generate=false` prewarm is connection setup, not an inference request.
@@ -1816,7 +1983,7 @@ impl ModelClientSession {
         let ResponsesWsRequest::ResponseCreate(ws_payload) = &mut ws_request;
         let store = ws_payload.store;
         self.client
-            .prepare_response_items_for_request(&mut ws_payload.input, store);
+            .prepare_response_items_for_request(&mut ws_payload.input, store, /*is_compaction*/ false);
         if previous_response_id_from_untraced_warmup {
             // The transport can reuse an untraced warmup response id and omit the
             // already-sent input, but rollout replay needs the logical model-visible
@@ -2170,6 +2337,8 @@ fn map_response_stream(
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     // 中立事件流携带 upstream_request_id（仅 telemetry 用，poll 不读）；提取后单独传入，
     // 流本身照原样转交 map_response_events（内部在循环顶部把 UnifiedEvent 归一为 ResponseEvent）。
+    // 进度副信道的响应侧消费（envelope → FC 合成）已移至 turn loop（P3b §12.3 step 4，
+    // handle_output_item_done），流层不再挂 decorator。
     let upstream_request_id = api_stream.upstream_request_id.clone();
     map_response_events(
         upstream_request_id,

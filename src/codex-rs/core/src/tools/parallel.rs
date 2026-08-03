@@ -28,6 +28,7 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolSpec;
 
 struct ToolCallTimingGuard {
     started_at: Instant,
@@ -69,6 +70,12 @@ impl ToolCallRuntime {
         tool_name: &codex_tools::ToolName,
     ) -> Option<Box<dyn ToolArgumentDiffConsumer>> {
         self.router.create_diff_consumer(tool_name)
+    }
+
+    /// 进度副信道（P3b §12.3 step 4）：暴露 model-visible 工具规格，供 turn loop
+    /// 在合成原生 FunctionCall / CustomToolCall 时构建「flat 名 → 是否 Freeform」映射。
+    pub(crate) fn model_visible_specs(&self) -> Vec<ToolSpec> {
+        self.router.model_visible_specs()
     }
 
     #[instrument(level = "trace", skip_all)]

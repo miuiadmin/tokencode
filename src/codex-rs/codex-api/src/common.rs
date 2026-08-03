@@ -320,6 +320,25 @@ pub fn create_text_param_for_request(
     })
 }
 
+/// 构造「结构化进度副信道」的统一输出 schema 下发参数（增量协议）。
+///
+/// 与 [`create_text_param_for_request`] 对偶：后者承载 turn 级终态结构化输出（`output_schema`），
+/// 本函数承载主循环每 turn 常驻的增量协议 schema（`{action, progress_patch, digest_override}`）。
+/// strict=false（自由 arguments 与 OpenAI strict 的 `additionalProperties:false` 冲突；三协议统一
+/// 为 schema 引导，P3 解析兜底）。schema 由调用方用 `codex_tools::build_progress_channel_schema`
+/// 构造后传入。
+pub fn create_progress_channel_text_param(schema: Value) -> Option<TextControls> {
+    Some(TextControls {
+        verbosity: None,
+        format: Some(TextFormat {
+            r#type: TextFormatType::JsonSchema,
+            strict: false,
+            schema,
+            name: "tokencode_progress_channel".to_string(),
+        }),
+    })
+}
+
 pub struct ResponseStream {
     pub rx_event: mpsc::Receiver<Result<ResponseEvent, ApiError>>,
     /// Server-assigned `x-request-id` response header, when present.

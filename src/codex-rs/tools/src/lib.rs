@@ -84,5 +84,7 @@ pub use tool_search::ToolSearchInfo;
 pub use tool_spec::ResponsesApiWebSearchFilters;
 pub use tool_spec::ResponsesApiWebSearchUserLocation;
 pub use tool_spec::ToolSpec;
+pub use tool_spec::build_progress_channel_schema;
 pub use tool_spec::create_tools_json_for_responses_api;
 pub use tool_spec::flatten_namespaces_for_flat_wire;
+pub use tool_spec::render_tool_catalog;

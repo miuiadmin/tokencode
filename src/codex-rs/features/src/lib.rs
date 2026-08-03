@@ -240,6 +240,11 @@ pub enum Feature {
     UseAgentIdentity,
     /// Enable workspace dependency support.
     WorkspaceDependencies,
+    /// 下发统一输出 schema（结构化进度副信道）：关闭原生 function calling，
+    /// 改让模型按 `{action, progress_patch, digest_override}` 的统一 JSON schema 输出。
+    /// P2 阶段仅下发侧（schema 下发 + 关 FC + 工具目录编进 instructions + 历史回喂一致性）；
+    /// 端到端消费需 P3 翻译层 decorator 解析 JSON 合成回原生 FC。
+    ProgressChannel,
 
     // Removed
     /// Removed compatibility flag retained as a no-op so old configs can
@@ -1355,6 +1360,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "workspace_dependencies",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ProgressChannel,
+        key: "progress_channel",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
 ];
 

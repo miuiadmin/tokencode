@@ -1179,6 +1179,9 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::WorldState(_) => {
                 // Not included in `head`; skip.
             }
+            RolloutItem::ProgressDigest(_) => {
+                // Not included in `head`; skip.
+            }
             RolloutItem::Compacted(_) => {
                 // Not included in `head`; skip.
             }
@@ -1242,7 +1245,8 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::EventMsg(_) => {}
+                | RolloutItem::EventMsg(_)
+                | RolloutItem::ProgressDigest(_) => {}
             }
         }
     }

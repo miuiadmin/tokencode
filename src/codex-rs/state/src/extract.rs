@@ -26,6 +26,7 @@ pub fn apply_rollout_item(
         | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
         RolloutItem::Compacted(_) => {}
         RolloutItem::WorldState(_) => {}
+        RolloutItem::ProgressDigest(_) => {}
     }
     if metadata.model_provider.is_empty() {
         metadata.model_provider = default_provider.to_string();
@@ -44,7 +45,8 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)
-        | RolloutItem::WorldState(_) => false,
+        | RolloutItem::WorldState(_)
+        | RolloutItem::ProgressDigest(_) => false,
     }
 }
 

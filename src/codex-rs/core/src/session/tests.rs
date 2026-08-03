@@ -488,6 +488,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        /*progress_channel*/ false,
         /*attestation_provider*/ None,
     )
     .new_session()
@@ -2735,7 +2736,8 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
-        | RolloutItem::EventMsg(_) => None,
+        | RolloutItem::EventMsg(_)
+        | RolloutItem::ProgressDigest(_) => None,
     });
     assert_eq!(
         persisted_replacement_history.map(Vec::as_slice),
@@ -2794,7 +2796,8 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
-        | RolloutItem::EventMsg(_) => None,
+        | RolloutItem::EventMsg(_)
+        | RolloutItem::ProgressDigest(_) => None,
     });
     assert_eq!(persisted_item_id, Some(live_item_id.as_str()));
 }
@@ -5442,6 +5445,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            /*progress_channel*/ config.features.enabled(Feature::ProgressChannel),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
@@ -7685,6 +7689,7 @@ where
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            /*progress_channel*/ config.features.enabled(Feature::ProgressChannel),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(

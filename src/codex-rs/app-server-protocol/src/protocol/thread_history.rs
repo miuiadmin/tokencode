@@ -389,7 +389,8 @@ impl ThreadHistoryBuilder {
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
-            | RolloutItem::SessionMeta(_) => {}
+            | RolloutItem::SessionMeta(_)
+            | RolloutItem::ProgressDigest(_) => {}
         }
     }
 

@@ -92,6 +92,111 @@ pub fn create_tools_json_for_responses_api(
     Ok(tools_json)
 }
 
+/// 构造「结构化进度副信道」的统一输出 JSON Schema（增量协议）。
+///
+/// 模型每步须按此 schema 输出 `{action, progress_patch, digest_override}`：
+/// - `action.tool` 为 enum（工具名列表），规避 Gemini responseSchema 不支持 oneOf 的硬伤，
+///   schema 体积恒定、不随工具数膨胀；
+/// - `action.arguments` 为自由 object（各工具参数不同），约束挪到 P3 执行前二次校验；
+/// - 顶层与固定结构加 `additionalProperties:false` 约束外壳，`arguments` 不加（strict=false，
+///   因自由 arguments 与 OpenAI strict 的 `additionalProperties:false` 硬冲突）；
+/// - `action` / `progress_patch` 用 `type:["object","null"]` 表 nullable（Gemini sanitize
+///   在 `sanitize_gemini_schema` 起始处转成 OpenAPI 3.0 的 `nullable:true`）。
+///
+/// 设计依据见 `设计文档/结构化输出与进度副信道-设计方案.md` §4。
+pub fn build_progress_channel_schema(tool_names: &[String]) -> Value {
+    use serde_json::json;
+    let enum_vals: Vec<Value> = tool_names.iter().cloned().map(Value::String).collect();
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "action": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "properties": {
+                    "tool": { "type": "string", "enum": enum_vals },
+                    "arguments": { "type": "object" }
+                },
+                "required": ["tool", "arguments"]
+            },
+            "progress_patch": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "properties": {
+                    "intent": { "type": "string" },
+                    "todo_ops": {
+                        "type": "array",
+                        "items": { "type": "object", "additionalProperties": true }
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": { "type": "object", "additionalProperties": true }
+                    },
+                    "next_step": { "type": "string" }
+                }
+            },
+            "digest_override": {}
+        },
+        "required": ["action", "progress_patch", "digest_override"]
+    })
+}
+
+/// 把模型可见工具渲染成中文工具目录文本，编进 instructions（关闭原生 function calling 后，
+/// 模型从 instructions 读工具目录，而非 wire 的 `tools` 字段）。
+///
+/// 与 [`create_tools_json_for_responses_api`] 对偶：后者产出机器可读 wire JSON，
+/// 本函数产出模型可读文本。namespace 工具应在调用前先用
+/// [`flatten_namespaces_for_flat_wire`] 展平；本函数仍兜底处理未展平的 namespace。
+pub fn render_tool_catalog(tools: &[ToolSpec]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    out.push_str("\n\n# 可用工具目录\n");
+    out.push_str(
+        "（以下工具通过统一输出 schema 的 action.tool 调用，参数填 action.arguments；勿使用原生 function calling）\n\n",
+    );
+    if tools.is_empty() {
+        out.push_str("（当前无可用工具）\n");
+        return out;
+    }
+    for tool in tools {
+        match tool {
+            ToolSpec::Function(t) => {
+                let _ = writeln!(out, "## {}", t.name);
+                if !t.description.is_empty() {
+                    let _ = writeln!(out, "{}", t.description);
+                }
+                if let Ok(params) = serde_json::to_string_pretty(&t.parameters) {
+                    let _ = writeln!(out, "参数 schema:\n```\n{params}\n```");
+                }
+            }
+            ToolSpec::Freeform(t) => {
+                let _ = writeln!(out, "## {}（自由格式工具）", t.name);
+                if !t.description.is_empty() {
+                    let _ = writeln!(out, "{}", t.description);
+                }
+                let _ = writeln!(out, "格式: {} ({})", t.format.syntax, t.format.r#type);
+                let _ = writeln!(
+                    out,
+                    "调用形态: action.arguments 填 `{{\"input\": <上方格式文本>}}`（raw 文本经 input 键承载，系统据此提取）"
+                );
+            }
+            ToolSpec::Namespace(ns) => {
+                let _ = writeln!(out, "## namespace: {}", ns.name);
+                for inner in &ns.tools {
+                    let ResponsesApiNamespaceTool::Function(t) = inner;
+                    let first_line = t.description.lines().next().unwrap_or("");
+                    let _ = writeln!(out, "  - {}: {}", t.name, first_line);
+                }
+            }
+            other => {
+                let _ = writeln!(out, "## {}", other.name());
+            }
+        }
+    }
+    out
+}
+
 /// 把 `ToolSpec::Namespace` 展平成若干 `ToolSpec::Function`，工具名按
 /// `{namespace}__{name}` 拼接（见 [`ToolName::to_flat_wire_name`]），其余变体原样保留。
 ///

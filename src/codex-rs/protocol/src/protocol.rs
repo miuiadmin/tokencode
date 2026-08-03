@@ -2666,7 +2666,8 @@ impl InitialHistory {
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
                 | RolloutItem::Compacted(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::EventMsg(_) => None,
+                | RolloutItem::EventMsg(_)
+                | RolloutItem::ProgressDigest(_) => None,
             })
             .and_then(|turn_context| turn_context.multi_agent_mode.clone())
     }
@@ -3002,7 +3003,8 @@ fn multi_agent_version_from_items(
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::Compacted(_)
             | RolloutItem::WorldState(_)
-            | RolloutItem::EventMsg(_) => None,
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::ProgressDigest(_) => None,
         })
     })
 }
@@ -3164,6 +3166,8 @@ pub enum RolloutItem {
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     WorldState(WorldStateItem),
+    /// 进度副信道 digest 落 L0(rollout-only,不进模型可见 history;§12.5)。
+    ProgressDigest(ProgressDigestItem),
     EventMsg(EventMsg),
 }
 
@@ -3183,6 +3187,64 @@ impl WorldStateItem {
     pub fn patch(state: Value) -> Self {
         Self { full: false, state }
     }
+}
+
+/// 进度副信道 digest 落 L0 的载体(rollout-only,不进模型可见 history)。
+/// 绕开三 adapter 对 role=system 的静默丢弃,以独立 RolloutItem variant 存档(§12.5)。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct ProgressDigestItem {
+    pub entry: DigestEntry,
+    /// original_intent 演进旧值脉络(防「演进」滑成「漂移」,§10.2 #9)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent_history: Vec<IntentChange>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct DigestEntry {
+    pub kind: DigestKind,
+    /// kind=Tool 时填工具 flat 名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// kind=Tool 时填(FCO output 截断)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief_result: Option<String>,
+    /// kind=Dialog 时填(user message 摘要)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog_summary: Option<String>,
+    pub turn_ref: TurnRef,
+    /// 落 L0 顺序号(去重/排序用)。
+    pub sequence: u64,
+    /// files_touched 不准时标 Low(§12.7)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<Confidence>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DigestKind {
+    Tool,
+    Dialog,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
+    High,
+    Low,
+}
+
+/// 指向 rollout 原始 turn(对齐代码 turn_id: String;rollout 按项目标,无 join 表)。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct TurnRef {
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct IntentChange {
+    pub old: String,
+    pub turn_ref: TurnRef,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, JsonSchema, TS)]
